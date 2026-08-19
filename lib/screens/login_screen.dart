@@ -1,6 +1,8 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
+import 'queue.dart';
+
 /// Brand colors pulled from the Docavail mockup.
 class _DocavailColors {
   static const navy = Color(0xFF0D2B9E);
@@ -31,8 +33,11 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   void _sendOtp() {
-    // TODO: hook up OTP request flow.
+    // TODO: hook up real OTP request flow.
     FocusScope.of(context).unfocus();
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (context) => const QueueScreen()),
+    );
   }
 
   void _loginWithProviderId() {
