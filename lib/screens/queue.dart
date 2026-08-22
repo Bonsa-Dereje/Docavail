@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'profile.dart';
+
 /// Brand + status colors used across the Queue screen.
 class _QueueColors {
   static const navy = Color(0xFF0D2B9E);
@@ -21,23 +23,33 @@ class _QueueColors {
   static const followUpBg = Color(0xFFB6F1DE);
   static const followUpFg = Color(0xFF0E7A57);
   static const followUpBar = Color(0xFF16A673);
+
+  static const dischargedBg = Color(0xFFE7E9F1);
+  static const dischargedFg = Color(0xFF5B6172);
+  static const dischargedBar = Color(0xFF9AA1B4);
 }
 
-enum _PatientTag { urgent, newPatient, followUp }
+enum _PatientTag { urgent, newPatient, followUp, routine }
+
+enum _PatientStatus { waiting, inConsult, discharged }
 
 class _QueuePatient {
+  final String name;
   final String ageGender;
   final String waitLabel;
   final String detailLabel;
   final String detailText;
   final _PatientTag tag;
+  final _PatientStatus status;
 
   const _QueuePatient({
+    required this.name,
     required this.ageGender,
     required this.waitLabel,
     required this.detailLabel,
     required this.detailText,
     required this.tag,
+    required this.status,
   });
 }
 
@@ -52,50 +64,127 @@ class _QueueScreenState extends State<QueueScreen> {
   int _selectedFilter = 0;
   int _selectedNavIndex = 0;
 
-  final List<String> _filters = const [
-    'All Patients',
-    'Waiting (4)',
-    'In Consult (1)',
-    'Discharged',
-  ];
-
   final List<_QueuePatient> _patients = const [
     _QueuePatient(
+      name: 'James Whitfield',
       ageGender: '42 y/o • Male',
       waitLabel: '45m wait',
       detailLabel: 'CHIEF COMPLAINT',
       detailText:
           'Severe chest pain radiating to the left arm. Shortness of breath and profuse sweating…',
       tag: _PatientTag.urgent,
+      status: _PatientStatus.waiting,
     ),
     _QueuePatient(
+      name: 'Amara Osei',
       ageGender: '28 y/o • Female',
       waitLabel: '12m wait',
       detailLabel: 'CHIEF COMPLAINT',
       detailText:
           'First time visit. Experiencing chronic migraines for the past 3 weeks, light…',
       tag: _PatientTag.newPatient,
+      status: _PatientStatus.waiting,
     ),
     _QueuePatient(
+      name: 'Robert Klein',
       ageGender: '65 y/o • Male',
       waitLabel: '5m wait',
       detailLabel: 'VISIT REASON',
       detailText:
-          'Post-operation checkup for knee arthroscopy. Checking mobility and…',
+          'Post-operation checkup for knee arthroscopy. Checking mobility and range of motion…',
       tag: _PatientTag.followUp,
+      status: _PatientStatus.waiting,
     ),
     _QueuePatient(
+      name: 'Sarah Nakamura',
       ageGender: '34 y/o • Female',
       waitLabel: '20m wait',
       detailLabel: 'CHIEF COMPLAINT',
       detailText:
-          'Recurring lower back pain after lifting. Requesting evaluation and…',
+          'Recurring lower back pain after lifting. Requesting evaluation and imaging…',
       tag: _PatientTag.urgent,
+      status: _PatientStatus.waiting,
+    ),
+    _QueuePatient(
+      name: 'Michael Torres',
+      ageGender: '51 y/o • Male',
+      waitLabel: 'In room 3',
+      detailLabel: 'VISIT REASON',
+      detailText:
+          'Annual physical exam and bloodwork review. Discussing cholesterol management…',
+      tag: _PatientTag.routine,
+      status: _PatientStatus.inConsult,
+    ),
+    _QueuePatient(
+      name: 'Linda Park',
+      ageGender: '39 y/o • Female',
+      waitLabel: 'Discharged 10:12 AM',
+      detailLabel: 'VISIT SUMMARY',
+      detailText:
+          'Treated for seasonal allergies. Prescribed antihistamine, follow up in 2 weeks…',
+      tag: _PatientTag.routine,
+      status: _PatientStatus.discharged,
+    ),
+    _QueuePatient(
+      name: 'David Chen',
+      ageGender: '19 y/o • Male',
+      waitLabel: 'Discharged 9:40 AM',
+      detailLabel: 'VISIT SUMMARY',
+      detailText:
+          'Sprained ankle from soccer practice. X-ray clear, fitted with a brace…',
+      tag: _PatientTag.followUp,
+      status: _PatientStatus.discharged,
+    ),
+    _QueuePatient(
+      name: 'Grace Muthoni',
+      ageGender: '71 y/o • Female',
+      waitLabel: '8m wait',
+      detailLabel: 'CHIEF COMPLAINT',
+      detailText:
+          'Dizziness and occasional blurred vision over the past week. History of hypertension…',
+      tag: _PatientTag.newPatient,
+      status: _PatientStatus.waiting,
     ),
   ];
 
+  List<_QueuePatient> get _filteredPatients {
+    switch (_selectedFilter) {
+      case 1:
+        return _patients
+            .where((p) => p.status == _PatientStatus.waiting)
+            .toList();
+      case 2:
+        return _patients
+            .where((p) => p.status == _PatientStatus.inConsult)
+            .toList();
+      case 3:
+        return _patients
+            .where((p) => p.status == _PatientStatus.discharged)
+            .toList();
+      default:
+        return _patients;
+    }
+  }
+
+  List<String> get _filters {
+    final waiting =
+        _patients.where((p) => p.status == _PatientStatus.waiting).length;
+    final inConsult =
+        _patients.where((p) => p.status == _PatientStatus.inConsult).length;
+    final discharged =
+        _patients.where((p) => p.status == _PatientStatus.discharged).length;
+    return [
+      'All Patients',
+      'Waiting ($waiting)',
+      'In Consult ($inConsult)',
+      'Discharged ($discharged)',
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
+    final patients = _filteredPatients;
+
     return Scaffold(
       backgroundColor: _QueueColors.background,
       body: SafeArea(
@@ -106,18 +195,41 @@ class _QueueScreenState extends State<QueueScreen> {
             _buildFilterRow(),
             const SizedBox(height: 16),
             Expanded(
-              child: ListView.separated(
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-                itemCount: _patients.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 16),
-                itemBuilder: (context, index) =>
-                    _buildPatientCard(_patients[index]),
-              ),
+              child: patients.isEmpty
+                  ? _buildEmptyState()
+                  : ListView.separated(
+                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                      itemCount: patients.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 16),
+                      itemBuilder: (context, index) =>
+                          _buildPatientCard(patients[index]),
+                    ),
             ),
           ],
         ),
       ),
       bottomNavigationBar: _buildBottomNav(),
+    );
+  }
+
+  Widget _buildEmptyState() {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.inbox_rounded,
+              size: 40, color: _QueueColors.subtitle),
+          const SizedBox(height: 12),
+          Text(
+            'No patients in this list',
+            style: const TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: _QueueColors.subtitle,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -156,12 +268,13 @@ class _QueueScreenState extends State<QueueScreen> {
   }
 
   Widget _buildFilterRow() {
+    final filters = _filters;
     return SizedBox(
       height: 44,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 20),
-        itemCount: _filters.length,
+        itemCount: filters.length,
         separatorBuilder: (_, __) => const SizedBox(width: 10),
         itemBuilder: (context, index) {
           final bool selected = index == _selectedFilter;
@@ -178,7 +291,7 @@ class _QueueScreenState extends State<QueueScreen> {
                 ),
               ),
               child: Text(
-                _filters[index],
+                filters[index],
                 style: TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
@@ -217,6 +330,12 @@ class _QueueScreenState extends State<QueueScreen> {
         badgeFg = _QueueColors.followUpFg;
         badgeText = 'FOLLOW-UP';
         break;
+      case _PatientTag.routine:
+        barColor = _QueueColors.dischargedBar;
+        badgeBg = _QueueColors.dischargedBg;
+        badgeFg = _QueueColors.dischargedFg;
+        badgeText = 'ROUTINE';
+        break;
     }
 
     final bool isUrgent = patient.tag == _PatientTag.urgent;
@@ -233,36 +352,51 @@ class _QueueScreenState extends State<QueueScreen> {
           ),
         ],
       ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Container(
-            width: 4,
-            decoration: BoxDecoration(
-              color: barColor,
-              borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(16),
-                bottomLeft: Radius.circular(16),
+      child: IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              width: 4,
+              decoration: BoxDecoration(
+                color: barColor,
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(16),
+                  bottomLeft: Radius.circular(16),
+                ),
               ),
             ),
-          ),
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 18, 16, 18),
-              child: Column(
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 18, 16, 18),
+                child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Expanded(
-                        child: Text(
-                          patient.ageGender,
-                          style: const TextStyle(
-                            fontSize: 17,
-                            fontWeight: FontWeight.w600,
-                            color: _QueueColors.heading,
-                          ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              patient.name,
+                              style: const TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w700,
+                                color: _QueueColors.navy,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              patient.ageGender,
+                              style: const TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w500,
+                                color: _QueueColors.subtitle,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                       Column(
@@ -315,7 +449,8 @@ class _QueueScreenState extends State<QueueScreen> {
               ),
             ),
           ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -449,7 +584,18 @@ class _QueueScreenState extends State<QueueScreen> {
 
             return Expanded(
               child: GestureDetector(
-                onTap: () => setState(() => _selectedNavIndex = index),
+                onTap: () {
+                  if (item.label == 'Profile') {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const ProfileScreen(),
+                      ),
+                    );
+                  } else {
+                    setState(() => _selectedNavIndex = index);
+                  }
+                },
                 behavior: HitTestBehavior.opaque,
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
