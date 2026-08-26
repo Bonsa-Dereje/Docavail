@@ -167,12 +167,15 @@ class _QueueScreenState extends State<QueueScreen> {
   }
 
   List<String> get _filters {
-    final waiting =
-        _patients.where((p) => p.status == _PatientStatus.waiting).length;
-    final inConsult =
-        _patients.where((p) => p.status == _PatientStatus.inConsult).length;
-    final discharged =
-        _patients.where((p) => p.status == _PatientStatus.discharged).length;
+    final waiting = _patients
+        .where((p) => p.status == _PatientStatus.waiting)
+        .length;
+    final inConsult = _patients
+        .where((p) => p.status == _PatientStatus.inConsult)
+        .length;
+    final discharged = _patients
+        .where((p) => p.status == _PatientStatus.discharged)
+        .length;
     return [
       'All Patients',
       'Waiting ($waiting)',
@@ -217,8 +220,11 @@ class _QueueScreenState extends State<QueueScreen> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.inbox_rounded,
-              size: 40, color: _QueueColors.subtitle),
+          const Icon(
+            Icons.inbox_rounded,
+            size: 40,
+            color: _QueueColors.subtitle,
+          ),
           const SizedBox(height: 12),
           Text(
             'No patients in this list',
@@ -370,85 +376,85 @@ class _QueueScreenState extends State<QueueScreen> {
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(16, 18, 16, 18),
                 child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              patient.name,
-                              style: const TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.w700,
-                                color: _QueueColors.navy,
-                              ),
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              patient.ageGender,
-                              style: const TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.w500,
-                                color: _QueueColors.subtitle,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          _buildBadge(badgeText, badgeBg, badgeFg),
-                          const SizedBox(height: 8),
-                          _buildWaitChip(patient.waitLabel, isUrgent),
-                        ],
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 14),
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(
-                      color: _QueueColors.cardFill,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          patient.detailLabel,
-                          style: const TextStyle(
-                            fontSize: 11.5,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 0.4,
-                            color: _QueueColors.subtitle,
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                patient.name,
+                                style: const TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w700,
+                                  color: _QueueColors.navy,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                patient.ageGender,
+                                style: const TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w500,
+                                  color: _QueueColors.subtitle,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                        const SizedBox(height: 6),
-                        Text(
-                          patient.detailText,
-                          style: const TextStyle(
-                            fontSize: 15,
-                            height: 1.35,
-                            color: _QueueColors.heading,
-                          ),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            _buildBadge(badgeText, badgeBg, badgeFg),
+                            const SizedBox(height: 8),
+                            _buildWaitChip(patient.waitLabel, isUrgent),
+                          ],
                         ),
                       ],
                     ),
-                  ),
-                  const SizedBox(height: 14),
-                  _buildCardActions(),
-                ],
+                    const SizedBox(height: 14),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: _QueueColors.cardFill,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            patient.detailLabel,
+                            style: const TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 0.4,
+                              color: _QueueColors.subtitle,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            patient.detailText,
+                            style: const TextStyle(
+                              fontSize: 15,
+                              height: 1.35,
+                              color: _QueueColors.heading,
+                            ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    _buildCardActions(),
+                  ],
+                ),
               ),
             ),
-          ),
           ],
         ),
       ),
@@ -563,8 +569,7 @@ class _QueueScreenState extends State<QueueScreen> {
         label: 'Notifications',
         showDot: true,
       ),
-      const _NavItem(
-          icon: Icons.account_circle_outlined, label: 'Profile'),
+      const _NavItem(icon: Icons.account_circle_outlined, label: 'Profile'),
     ];
 
     return SafeArea(
@@ -579,8 +584,9 @@ class _QueueScreenState extends State<QueueScreen> {
           children: List.generate(items.length, (index) {
             final bool selected = index == _selectedNavIndex;
             final item = items[index];
-            final Color color =
-                selected ? _QueueColors.navy : _QueueColors.subtitle;
+            final Color color = selected
+                ? _QueueColors.navy
+                : _QueueColors.subtitle;
 
             return Expanded(
               child: GestureDetector(
@@ -624,7 +630,9 @@ class _QueueScreenState extends State<QueueScreen> {
                       item.label,
                       style: TextStyle(
                         fontSize: 11.5,
-                        fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                        fontWeight: selected
+                            ? FontWeight.w700
+                            : FontWeight.w500,
                         color: color,
                       ),
                     ),
