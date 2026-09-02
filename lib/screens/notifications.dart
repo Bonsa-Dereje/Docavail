@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'patients.dart';
 import 'profile.dart';
 
 /// Brand + status colors used across the Notifications screen.
@@ -419,6 +420,13 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                       context,
                       MaterialPageRoute(
                         builder: (context) => const ProfileScreen(),
+                      ),
+                    );
+                  } else if (item.label == 'Patients') {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const PatientBriefScreen(),
                       ),
                     );
                   } else {

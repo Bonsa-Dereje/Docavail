@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'patients.dart';
+
 /// Brand + status colors used across the Profile / Status Control screen.
 class _ProfileColors {
   static const navy = Color(0xFF0D2B9E);
@@ -334,7 +336,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
             return Expanded(
               child: GestureDetector(
                 onTap: () {
-                  if (index == 0) {
+                  if (index == 1) {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const PatientBriefScreen(),
+                      ),
+                    );
+                  } else if (index == 0) {
                     // Already came from Queue — go back to it.
                     Navigator.of(context).maybePop();
                   }
