@@ -1,7 +1,11 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
-import 'queue.dart';
+import 'app_shell.dart';
 
 /// Brand colors pulled from the Docavail mockup.
 class _DocavailColors {
@@ -16,6 +20,102 @@ class _DocavailColors {
   static const gradientBottom = Color(0xFFCFF3E6);
 }
 
+/// Thrown for any failure talking to the SMS gateway relay.
+class OtpGatewayException implements Exception {
+  OtpGatewayException(this.message);
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+/// Thin client for the public Vercel relay described in
+/// vercel_api_endpoints.md. This talks to the QUEUE side only
+/// (POST /api/otp/request, GET /api/otp/request?request_id=...) —
+/// the phone-app-only endpoints (action=next / action=list / PATCH)
+/// require GATEWAY_SECRET and have no business being in this client app.
+class OtpGatewayClient {
+  OtpGatewayClient({
+    this.baseUrl = 'https://sms-gateway-router.vercel.app',
+    this.clientApiKey,
+  });
+
+  final String baseUrl;
+
+  /// Only needed if CLIENT_API_KEY is configured server-side. Leave null
+  /// if the queue endpoint is open.
+  final String? clientApiKey;
+
+  /// Queues a new OTP request. Returns the request_id to poll on.
+  Future<String> queueOtp({
+    required String phoneNumber,
+    int otpLength = 6,
+    String? specialText,
+  }) async {
+    final uri = Uri.parse('$baseUrl/api/otp/request');
+    final headers = {
+      'Content-Type': 'application/json',
+      if (clientApiKey != null) 'Authorization': 'Bearer $clientApiKey',
+    };
+    final body = jsonEncode({
+      'phone_number': phoneNumber,
+      'otp_length': otpLength,
+      if (specialText != null) 'special_text': specialText,
+    });
+
+    late final http.Response response;
+    try {
+      response = await http.post(uri, headers: headers, body: body);
+    } on Exception {
+      throw OtpGatewayException(
+        'Could not reach the SMS gateway. Check your connection and try again.',
+      );
+    }
+
+    if (response.statusCode == 201) {
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      return data['request_id'] as String;
+    }
+
+    if (response.statusCode == 400) {
+      throw OtpGatewayException('That phone number doesn\'t look right.');
+    }
+    if (response.statusCode == 401) {
+      throw OtpGatewayException('Not authorized to request a code.');
+    }
+    throw OtpGatewayException(
+      'Failed to queue OTP request (${response.statusCode}).',
+    );
+  }
+
+  /// Fetches the current status of a single request.
+  Future<Map<String, dynamic>> checkStatus(String requestId) async {
+    final uri = Uri.parse('$baseUrl/api/otp/request?request_id=$requestId');
+
+    late final http.Response response;
+    try {
+      response = await http.get(uri);
+    } on Exception {
+      throw OtpGatewayException(
+        'Could not reach the SMS gateway. Check your connection and try again.',
+      );
+    }
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    }
+    if (response.statusCode == 404) {
+      throw OtpGatewayException(
+        'That request expired before the code could be sent. Try again.',
+      );
+    }
+    throw OtpGatewayException(
+      'Failed to check OTP status (${response.statusCode}).',
+    );
+  }
+
+}
+
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -25,6 +125,9 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen> {
   final TextEditingController _phoneController = TextEditingController();
+  final OtpGatewayClient _otpGateway = OtpGatewayClient();
+
+  bool _isSendingOtp = false;
 
   @override
   void dispose() {
@@ -32,12 +135,42 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
-  void _sendOtp() {
-    // TODO: hook up real OTP request flow.
+  Future<void> _sendOtp() async {
+    final phoneNumber = _phoneController.text.trim();
+
+    if (phoneNumber.isEmpty) {
+      _showMessage('Enter a phone number first.');
+      return;
+    }
+
     FocusScope.of(context).unfocus();
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (context) => const QueueScreen()),
-    );
+    setState(() => _isSendingOtp = true);
+
+    try {
+      await _otpGateway.queueOtp(
+        phoneNumber: phoneNumber,
+        otpLength: 6,
+        specialText: 'Do not share this code with anyone.',
+      );
+
+      if (!mounted) return;
+
+      Navigator.of(context).push(
+        MaterialPageRoute(builder: (context) => const AppShell()),
+      );
+    } on OtpGatewayException catch (e) {
+      if (mounted) _showMessage(e.message);
+    } catch (e) {
+      if (mounted) _showMessage('Something went wrong. Please try again.');
+    } finally {
+      if (mounted) setState(() => _isSendingOtp = false);
+    }
+  }
+
+  void _showMessage(String message) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
   }
 
   void _loginWithProviderId() {
@@ -157,6 +290,7 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget _buildPhoneField() {
     return TextField(
       controller: _phoneController,
+      enabled: !_isSendingOtp,
       keyboardType: TextInputType.phone,
       style: const TextStyle(fontSize: 15, color: _DocavailColors.heading),
       decoration: InputDecoration(
@@ -190,26 +324,37 @@ class _LoginScreenState extends State<LoginScreen> {
     return SizedBox(
       height: 52,
       child: ElevatedButton(
-        onPressed: _sendOtp,
+        onPressed: _isSendingOtp ? null : _sendOtp,
         style: ElevatedButton.styleFrom(
           backgroundColor: _DocavailColors.darkBlue,
           foregroundColor: Colors.white,
+          disabledBackgroundColor:
+              _DocavailColors.darkBlue.withValues(alpha: 0.6),
           elevation: 0,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(14),
           ),
         ),
-        child: const Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(
-              'Send OTP',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-            ),
-            SizedBox(width: 8),
-            Icon(Icons.arrow_forward, size: 18),
-          ],
-        ),
+        child: _isSendingOtp
+            ? const SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.4,
+                  color: Colors.white,
+                ),
+              )
+            : const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    'Send OTP',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                  ),
+                  SizedBox(width: 8),
+                  Icon(Icons.arrow_forward, size: 18),
+                ],
+              ),
       ),
     );
   }

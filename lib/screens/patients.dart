@@ -118,7 +118,7 @@ class PatientBriefScreen extends StatelessWidget {
       body: SafeArea(
         child: Column(
           children: [
-            _buildTopBar(context),
+            _buildTopBar(),
             Expanded(
               child: ListView(
                 padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
@@ -166,25 +166,20 @@ class PatientBriefScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildTopBar(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 20, 8),
-      child: Row(
-        children: [
-          IconButton(
-            icon: const Icon(Icons.arrow_back, color: _PatientColors.heading),
-            onPressed: () => Navigator.maybePop(context),
-          ),
-          const SizedBox(width: 4),
-          const Text(
-            'Patient Brief',
-            style: TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.w600,
-              color: _PatientColors.heading,
-            ),
-          ),
-        ],
+  Widget _buildTopBar() {
+    // No back button here: as a bottom-nav tab (see AppShell) this screen
+    // has no route to pop back to. If you also push PatientBriefScreen
+    // directly (e.g. from a "View Details" action outside the shell), wrap
+    // that pushed instance in its own AppBar with a back button instead.
+    return const Padding(
+      padding: EdgeInsets.fromLTRB(20, 12, 20, 8),
+      child: Text(
+        'Patient Brief',
+        style: TextStyle(
+          fontSize: 20,
+          fontWeight: FontWeight.w600,
+          color: _PatientColors.heading,
+        ),
       ),
     );
   }
@@ -430,14 +425,19 @@ class PatientBriefScreen extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                vital.label,
-                style: const TextStyle(
-                  fontSize: 14.5,
-                  fontWeight: FontWeight.w500,
-                  color: _PatientColors.subtitle,
+              Flexible(
+                child: Text(
+                  vital.label,
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                  style: const TextStyle(
+                    fontSize: 14.5,
+                    fontWeight: FontWeight.w500,
+                    color: _PatientColors.subtitle,
+                  ),
                 ),
               ),
+              const SizedBox(width: 6),
               Icon(vital.icon, size: 18, color: vital.iconColor),
             ],
           ),
@@ -445,12 +445,16 @@ class PatientBriefScreen extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.baseline,
             textBaseline: TextBaseline.alphabetic,
             children: [
-              Text(
-                vital.value,
-                style: TextStyle(
-                  fontSize: 26,
-                  fontWeight: FontWeight.w700,
-                  color: vital.valueColor,
+              Flexible(
+                child: Text(
+                  vital.value,
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                  style: TextStyle(
+                    fontSize: 26,
+                    fontWeight: FontWeight.w700,
+                    color: vital.valueColor,
+                  ),
                 ),
               ),
               if (vital.unit != null) ...[

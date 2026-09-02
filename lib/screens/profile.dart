@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
 
-import 'patients.dart';
-
 /// Brand + status colors used across the Profile / Status Control screen.
 class _ProfileColors {
   static const navy = Color(0xFF0D2B9E);
@@ -76,7 +74,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ],
         ),
       ),
-      bottomNavigationBar: _buildBottomNav(context),
     );
   }
 
@@ -303,83 +300,4 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  Widget _buildBottomNav(BuildContext context) {
-    final items = <_ProfileNavItem>[
-      const _ProfileNavItem(icon: Icons.grid_view_rounded, label: 'Queue'),
-      const _ProfileNavItem(
-          icon: Icons.person_outline_rounded, label: 'Patients'),
-      const _ProfileNavItem(
-        icon: Icons.notifications_none_rounded,
-        label: 'Notifications',
-      ),
-      const _ProfileNavItem(
-          icon: Icons.account_circle_outlined, label: 'Profile'),
-    ];
-
-    const int selectedIndex = 3; // Profile tab is active on this screen.
-
-    return SafeArea(
-      top: false,
-      child: Container(
-        height: 68,
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          border: Border(top: BorderSide(color: _ProfileColors.divider)),
-        ),
-        child: Row(
-          children: List.generate(items.length, (index) {
-            final bool selected = index == selectedIndex;
-            final item = items[index];
-            final Color color =
-                selected ? _ProfileColors.navy : _ProfileColors.subtitle;
-
-            return Expanded(
-              child: GestureDetector(
-                onTap: () {
-                  if (index == 1) {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => const PatientBriefScreen(),
-                      ),
-                    );
-                  } else if (index == 0) {
-                    // Already came from Queue — go back to it.
-                    Navigator.of(context).maybePop();
-                  }
-                },
-                behavior: HitTestBehavior.opaque,
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(item.icon, color: color, size: 24),
-                    const SizedBox(height: 4),
-                    Text(
-                      item.label,
-                      style: TextStyle(
-                        fontSize: 11.5,
-                        fontWeight:
-                            selected ? FontWeight.w700 : FontWeight.w500,
-                        color: color,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          }),
-        ),
-      ),
-    );
-  }
-}
-
-class _ProfileNavItem {
-  final IconData icon;
-  final String label;
-
-  const _ProfileNavItem({
-    required this.icon,
-    required this.label,
-  });
 }

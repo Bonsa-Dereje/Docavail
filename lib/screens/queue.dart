@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'patients.dart';
-import 'profile.dart';
+import 'app_shell.dart';
 
 /// Brand + status colors used across the Queue screen.
 class _QueueColors {
@@ -63,7 +62,6 @@ class QueueScreen extends StatefulWidget {
 
 class _QueueScreenState extends State<QueueScreen> {
   int _selectedFilter = 0;
-  int _selectedNavIndex = 0;
 
   final List<_QueuePatient> _patients = const [
     _QueuePatient(
@@ -212,7 +210,6 @@ class _QueueScreenState extends State<QueueScreen> {
           ],
         ),
       ),
-      bottomNavigationBar: _buildBottomNav(),
     );
   }
 
@@ -469,9 +466,7 @@ class _QueueScreenState extends State<QueueScreen> {
           child: SizedBox(
             height: 44,
             child: OutlinedButton(
-              onPressed: () {
-                // TODO: hook up "View Details" — placeholder for now.
-              },
+              onPressed: () => AppShellScope.of(context)?.switchTab(1),
               style: OutlinedButton.styleFrom(
                 foregroundColor: _QueueColors.heading,
                 side: const BorderSide(color: _QueueColors.divider),
@@ -561,108 +556,4 @@ class _QueueScreenState extends State<QueueScreen> {
     );
   }
 
-  Widget _buildBottomNav() {
-    final items = <_NavItem>[
-      const _NavItem(icon: Icons.grid_view_rounded, label: 'Queue'),
-      const _NavItem(icon: Icons.person_outline_rounded, label: 'Patients'),
-      const _NavItem(
-        icon: Icons.notifications_none_rounded,
-        label: 'Notifications',
-        showDot: true,
-      ),
-      const _NavItem(icon: Icons.account_circle_outlined, label: 'Profile'),
-    ];
-
-    return SafeArea(
-      top: false,
-      child: Container(
-        height: 68,
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          border: Border(top: BorderSide(color: _QueueColors.divider)),
-        ),
-        child: Row(
-          children: List.generate(items.length, (index) {
-            final bool selected = index == _selectedNavIndex;
-            final item = items[index];
-            final Color color = selected
-                ? _QueueColors.navy
-                : _QueueColors.subtitle;
-
-            return Expanded(
-              child: GestureDetector(
-                onTap: () {
-                  if (item.label == 'Profile') {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => const ProfileScreen(),
-                      ),
-                    );
-                  } else if (item.label == 'Patients') {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => const PatientBriefScreen(),
-                      ),
-                    );
-                  } else {
-                    setState(() => _selectedNavIndex = index);
-                  }
-                },
-                behavior: HitTestBehavior.opaque,
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Stack(
-                      clipBehavior: Clip.none,
-                      children: [
-                        Icon(item.icon, color: color, size: 24),
-                        if (item.showDot)
-                          Positioned(
-                            right: -2,
-                            top: -2,
-                            child: Container(
-                              width: 8,
-                              height: 8,
-                              decoration: const BoxDecoration(
-                                color: _QueueColors.urgentFg,
-                                shape: BoxShape.circle,
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      item.label,
-                      style: TextStyle(
-                        fontSize: 11.5,
-                        fontWeight: selected
-                            ? FontWeight.w700
-                            : FontWeight.w500,
-                        color: color,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          }),
-        ),
-      ),
-    );
-  }
-}
-
-class _NavItem {
-  final IconData icon;
-  final String label;
-  final bool showDot;
-
-  const _NavItem({
-    required this.icon,
-    required this.label,
-    this.showDot = false,
-  });
 }
