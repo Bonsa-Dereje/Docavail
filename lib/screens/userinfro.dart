@@ -44,7 +44,10 @@ class _UserInfoScreenState extends State<UserInfoScreen> {
     super.dispose();
   }
 
-  Future<void> _register() async {
+  /// Finishes account setup, then hands off to AppShell — which opens on
+  /// the Queue tab (queue.dart), complete with the shared bottom nav bar
+  /// that every tab (Queue, Patient Brief, Profile, …) renders inside.
+  Future<void> _finishSetup() async {
     final name = _nameController.text.trim();
 
     if (name.isEmpty) {
@@ -195,7 +198,7 @@ class _UserInfoScreenState extends State<UserInfoScreen> {
           const SizedBox(height: 8),
           _buildRoleDropdown(),
           const SizedBox(height: 28),
-          _buildRegisterButton(),
+          _buildDoneButton(),
         ],
       ),
     );
@@ -298,11 +301,11 @@ class _UserInfoScreenState extends State<UserInfoScreen> {
     );
   }
 
-  Widget _buildRegisterButton() {
+  Widget _buildDoneButton() {
     return SizedBox(
       height: 52,
       child: ElevatedButton(
-        onPressed: _isRegistering ? null : _register,
+        onPressed: _isRegistering ? null : _finishSetup,
         style: ElevatedButton.styleFrom(
           backgroundColor: _DocavailColors.darkBlue,
           foregroundColor: Colors.white,
@@ -326,11 +329,11 @@ class _UserInfoScreenState extends State<UserInfoScreen> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Text(
-                    'Register',
+                    'Done',
                     style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
                   ),
                   SizedBox(width: 8),
-                  Icon(Icons.arrow_forward, size: 18),
+                  Icon(Icons.check_rounded, size: 18),
                 ],
               ),
       ),
