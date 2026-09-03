@@ -5,7 +5,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
-import 'app_shell.dart';
+import 'otpverif.dart';
 
 /// Brand colors pulled from the Docavail mockup.
 class _DocavailColors {
@@ -156,7 +156,9 @@ class _LoginScreenState extends State<LoginScreen> {
       if (!mounted) return;
 
       Navigator.of(context).push(
-        MaterialPageRoute(builder: (context) => const AppShell()),
+        MaterialPageRoute(
+          builder: (context) => OtpVerifScreen(phoneNumber: phoneNumber),
+        ),
       );
     } on OtpGatewayException catch (e) {
       if (mounted) _showMessage(e.message);
