@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
-import 'patients.dart' show PatientBriefScreen;
+import 'app_shell.dart';
 
 /// Brand colors pulled from the Docavail mockup.
 /// Kept in sync with the palette used in userinfro.dart / pin.dart.
@@ -93,7 +93,7 @@ class _IdLoginScreenState extends State<IdLoginScreen> {
       final match = body['match'] == true;
       if (response.statusCode == 200 && match) {
         Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (context) => const PatientBriefScreen()),
+          MaterialPageRoute(builder: (context) => const AppShell()),
         );
       } else {
         _showMessage('Incorrect ID or PIN. Please try again.');

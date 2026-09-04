@@ -35,75 +35,37 @@ class _ProfileScreenState extends State<ProfileScreen> {
       backgroundColor: _ProfileColors.background,
       body: SafeArea(
         bottom: false,
-        child: Column(
-          children: [
-            _buildTopBar(context),
-            Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Status Control',
-                      style: TextStyle(
-                        fontSize: 28,
-                        fontWeight: FontWeight.w800,
-                        color: _ProfileColors.heading,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    const Text(
-                      'Manage your current availability and location.',
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w500,
-                        color: _ProfileColors.subtitle,
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                    _buildDoctorCard(),
-                    const SizedBox(height: 20),
-                    _buildAvailabilityGrid(),
-                    const SizedBox(height: 24),
-                    _buildLastUpdated(),
-                  ],
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Status Control',
+                style: TextStyle(
+                  fontSize: 28,
+                  fontWeight: FontWeight.w800,
+                  color: _ProfileColors.heading,
                 ),
               ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildTopBar(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
-      child: Row(
-        children: [
-          const CircleAvatar(
-            radius: 20,
-            backgroundColor: _ProfileColors.divider,
-            child: Icon(Icons.person, color: _ProfileColors.subtitle),
-          ),
-          const SizedBox(width: 12),
-          const Expanded(
-            child: Text(
-              'My Queue',
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.w800,
-                color: _ProfileColors.navy,
+              const SizedBox(height: 6),
+              const Text(
+                'Manage your current availability and location.',
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w500,
+                  color: _ProfileColors.subtitle,
+                ),
               ),
-            ),
+              const SizedBox(height: 20),
+              _buildDoctorCard(),
+              const SizedBox(height: 20),
+              _buildAvailabilityGrid(),
+              const SizedBox(height: 24),
+              _buildLastUpdated(),
+            ],
           ),
-          const Icon(
-            Icons.filter_list_rounded,
-            color: _ProfileColors.navy,
-            size: 24,
-          ),
-        ],
+        ),
       ),
     );
   }
