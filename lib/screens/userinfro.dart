@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 
-import 'app_shell.dart';
+import 'pin.dart';
 
 /// Brand colors pulled from the Docavail mockup.
-/// Kept in sync with the palette used in login_screen.dart.
+/// Kept in sync with the palette used in login_screen.dart / pin.dart.
 class _DocavailColors {
   static const navy = Color(0xFF0D2B9E);
   static const darkBlue = Color(0xFF0B2694);
@@ -25,6 +25,21 @@ enum DocavailRole {
   final String label;
 }
 
+/// Maps [DocavailRole] to/from the `user_role` Postgres enum values
+/// ('doctor', 'triage_nurse', 'reception') used by userinfo.js.
+extension DocavailRoleApi on DocavailRole {
+  String get apiValue {
+    switch (this) {
+      case DocavailRole.doctor:
+        return 'doctor';
+      case DocavailRole.triageNurse:
+        return 'triage_nurse';
+      case DocavailRole.reception:
+        return 'reception';
+    }
+  }
+}
+
 class UserInfoScreen extends StatefulWidget {
   const UserInfoScreen({super.key});
 
@@ -44,9 +59,8 @@ class _UserInfoScreenState extends State<UserInfoScreen> {
     super.dispose();
   }
 
-  /// Finishes account setup, then hands off to AppShell — which opens on
-  /// the Queue tab (queue.dart), complete with the shared bottom nav bar
-  /// that every tab (Queue, Patient Brief, Profile, …) renders inside.
+  /// Shows a brief loading spinner, then hands off to pin.dart to create
+  /// a PIN. No backend check happens yet — see TODO below.
   Future<void> _finishSetup() async {
     final name = _nameController.text.trim();
 
@@ -62,20 +76,24 @@ class _UserInfoScreenState extends State<UserInfoScreen> {
     FocusScope.of(context).unfocus();
     setState(() => _isRegistering = true);
 
-    try {
-      // TODO: wire this up to the actual registration endpoint.
-      await Future<void>.delayed(const Duration(milliseconds: 600));
+    // TODO: this is currently just a spinner + fixed delay — no lookup
+    // happens yet. Swap this back to a real hospital-directory / existing-
+    // account check (via userinfo.js) once that endpoint is deployed and
+    // reachable, then branch into the "already exists" vs "confirmed" flow.
+    await Future<void>.delayed(const Duration(milliseconds: 900));
 
-      if (!mounted) return;
+    if (!mounted) return;
+    setState(() => _isRegistering = false);
 
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (context) => const AppShell()),
-      );
-    } catch (e) {
-      if (mounted) _showMessage('Something went wrong. Please try again.');
-    } finally {
-      if (mounted) setState(() => _isRegistering = false);
-    }
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (context) => PinScreen(
+          fullName: name,
+          role: _selectedRole!,
+          isLogin: false,
+        ),
+      ),
+    );
   }
 
   void _showMessage(String message) {
@@ -198,7 +216,7 @@ class _UserInfoScreenState extends State<UserInfoScreen> {
           const SizedBox(height: 8),
           _buildRoleDropdown(),
           const SizedBox(height: 28),
-          _buildDoneButton(),
+          _buildProceedButton(),
         ],
       ),
     );
@@ -301,7 +319,7 @@ class _UserInfoScreenState extends State<UserInfoScreen> {
     );
   }
 
-  Widget _buildDoneButton() {
+  Widget _buildProceedButton() {
     return SizedBox(
       height: 52,
       child: ElevatedButton(
@@ -329,11 +347,11 @@ class _UserInfoScreenState extends State<UserInfoScreen> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Text(
-                    'Done',
+                    'Proceed',
                     style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
                   ),
                   SizedBox(width: 8),
-                  Icon(Icons.check_rounded, size: 18),
+                  Icon(Icons.arrow_forward_rounded, size: 18),
                 ],
               ),
       ),
