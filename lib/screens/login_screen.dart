@@ -7,7 +7,6 @@ import 'package:http/http.dart' as http;
 
 import 'login.dart' show IdLoginScreen;
 import 'otpverif.dart';
-import 'userinfro.dart';
 
 /// Brand colors pulled from the Docavail mockup.
 class _DocavailColors {
@@ -157,16 +156,9 @@ class _LoginScreenState extends State<LoginScreen> {
 
       if (!mounted) return;
 
-      // TODO: OTP flow temporarily bypassed — jumping straight to
-      // UserInfoScreen. Restore this once OTP verification is ready again.
-      // Navigator.of(context).push(
-      //   MaterialPageRoute(
-      //     builder: (context) => OtpVerifScreen(phoneNumber: phoneNumber),
-      //   ),
-      // );
       Navigator.of(context).push(
         MaterialPageRoute(
-          builder: (context) => UserInfoScreen(phoneNumber: phoneNumber),
+          builder: (context) => OtpVerifScreen(phoneNumber: phoneNumber),
         ),
       );
     } on OtpGatewayException catch (e) {
