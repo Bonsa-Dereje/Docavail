@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
 import 'app_shell.dart';
+import '../services/auth_service.dart';
 
 /// Brand colors pulled from the Docavail mockup.
 /// Kept in sync with the palette used in userinfro.dart / pin.dart.
@@ -90,8 +91,13 @@ class _IdLoginScreenState extends State<IdLoginScreen> {
           ? jsonDecode(response.body) as Map<String, dynamic>
           : <String, dynamic>{};
 
+      debugPrint('Login response ${response.statusCode}: $body');
+
       final match = body['match'] == true;
       if (response.statusCode == 200 && match) {
+        final token = body['token'] as String?;
+        if (token != null) await AuthService.instance.saveToken(token);
+        if (!mounted) return;
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(builder: (context) => const AppShell()),
         );

@@ -2,7 +2,9 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import 'screens/app_shell.dart';
 import 'screens/login_screen.dart';
+import 'services/auth_service.dart';
 
 void main() {
   runApp(const MyApp());
@@ -45,6 +47,8 @@ class _SplashScreenState extends State<SplashScreen>
   static const _fadeInDuration = Duration(milliseconds: 700);
   static const _totalSplashDuration = Duration(seconds: 2);
 
+  late final Future<bool> _sessionCheck;
+
   @override
   void initState() {
     super.initState();
@@ -59,22 +63,26 @@ class _SplashScreenState extends State<SplashScreen>
     );
 
     _controller.forward();
+    _sessionCheck = AuthService.instance.hasValidSession();
 
-    Timer(_totalSplashDuration, _goToLogin);
+    Timer(_totalSplashDuration, _navigate);
   }
 
-  void _goToLogin() {
+  void _navigate() {
     if (!mounted) return;
-    Navigator.of(context).pushReplacement(
-      PageRouteBuilder(
-        transitionDuration: const Duration(milliseconds: 400),
-        pageBuilder: (context, animation, secondaryAnimation) =>
-            const LoginScreen(),
-        transitionsBuilder: (context, animation, secondaryAnimation, child) {
-          return FadeTransition(opacity: animation, child: child);
-        },
-      ),
-    );
+    _sessionCheck.then((valid) {
+      if (!mounted) return;
+      final destination = valid ? const AppShell() : const LoginScreen();
+      Navigator.of(context).pushReplacement(
+        PageRouteBuilder(
+          transitionDuration: const Duration(milliseconds: 400),
+          pageBuilder: (context, animation, secondaryAnimation) => destination,
+          transitionsBuilder: (context, animation, secondaryAnimation, child) {
+            return FadeTransition(opacity: animation, child: child);
+          },
+        ),
+      );
+    });
   }
 
   @override

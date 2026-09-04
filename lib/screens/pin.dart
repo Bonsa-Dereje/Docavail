@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
 import 'app_shell.dart';
+import '../services/auth_service.dart';
 import 'userinfro.dart' show DocavailRole, DocavailRoleApi;
 
 /// Brand colors pulled from the Docavail mockup.
@@ -112,9 +113,14 @@ class _PinScreenState extends State<PinScreen> {
           ? jsonDecode(response.body) as Map<String, dynamic>
           : <String, dynamic>{};
 
+      debugPrint('PIN response ${response.statusCode}: $body');
+
       if (widget.isLogin) {
         final match = body['match'] == true;
         if (response.statusCode == 200 && match) {
+          final token = body['token'] as String?;
+          if (token != null) await AuthService.instance.saveToken(token);
+          if (!mounted) return;
           _goToPatients();
         } else {
           _showMessage('Incorrect PIN. Please try again.');
@@ -123,6 +129,9 @@ class _PinScreenState extends State<PinScreen> {
       }
 
       if (response.statusCode == 201 || response.statusCode == 200) {
+        final token = body['token'] as String?;
+        if (token != null) await AuthService.instance.saveToken(token);
+        if (!mounted) return;
         _goToPatients();
       } else if (response.statusCode == 409) {
         _showMessage('Account already exists. Please log in instead.');
