@@ -5,7 +5,9 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
+import 'login.dart' show IdLoginScreen;
 import 'otpverif.dart';
+import 'userinfro.dart';
 
 /// Brand colors pulled from the Docavail mockup.
 class _DocavailColors {
@@ -155,9 +157,16 @@ class _LoginScreenState extends State<LoginScreen> {
 
       if (!mounted) return;
 
+      // TODO: OTP flow temporarily bypassed — jumping straight to
+      // UserInfoScreen. Restore this once OTP verification is ready again.
+      // Navigator.of(context).push(
+      //   MaterialPageRoute(
+      //     builder: (context) => OtpVerifScreen(phoneNumber: phoneNumber),
+      //   ),
+      // );
       Navigator.of(context).push(
         MaterialPageRoute(
-          builder: (context) => OtpVerifScreen(phoneNumber: phoneNumber),
+          builder: (context) => UserInfoScreen(phoneNumber: phoneNumber),
         ),
       );
     } on OtpGatewayException catch (e) {
@@ -175,8 +184,10 @@ class _LoginScreenState extends State<LoginScreen> {
       ..showSnackBar(SnackBar(content: Text(message)));
   }
 
-  void _loginWithProviderId() {
-    // TODO: hook up provider ID login flow.
+  void _loginWithIdCard() {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (context) => const IdLoginScreen()),
+    );
   }
 
   void _contactSupport() {
@@ -281,7 +292,7 @@ class _LoginScreenState extends State<LoginScreen> {
           const SizedBox(height: 20),
           _buildOrDivider(),
           const SizedBox(height: 20),
-          _buildProviderIdButton(),
+          _buildIdCardButton(),
           const SizedBox(height: 24),
           _buildSupportRow(),
         ],
@@ -381,11 +392,11 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
-  Widget _buildProviderIdButton() {
+  Widget _buildIdCardButton() {
     return SizedBox(
       height: 52,
       child: OutlinedButton(
-        onPressed: _loginWithProviderId,
+        onPressed: _loginWithIdCard,
         style: OutlinedButton.styleFrom(
           backgroundColor: _DocavailColors.fieldFill,
           foregroundColor: _DocavailColors.heading,
@@ -397,10 +408,10 @@ class _LoginScreenState extends State<LoginScreen> {
         child: const Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.badge_outlined, size: 20, color: _DocavailColors.heading),
+            Icon(Icons.credit_card_outlined, size: 20, color: _DocavailColors.heading),
             SizedBox(width: 10),
             Text(
-              'Login with Provider ID',
+              'Login with ID Card',
               style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
             ),
           ],

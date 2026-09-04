@@ -1,5 +1,10 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
+import 'dart:convert';
 
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+
+import 'login.dart' show IdLoginScreen;
 import 'pin.dart';
 
 /// Brand colors pulled from the Docavail mockup.
@@ -14,6 +19,10 @@ class _DocavailColors {
   static const gradientTop = Color(0xFFEDEFFA);
   static const gradientBottom = Color(0xFFCFF3E6);
 }
+
+// TODO: point this at your deployed Vercel project. Keep this in sync
+// with the constant of the same name in pin.dart / login.dart.
+const String _apiBaseUrl = 'https://docavail-endpoints.vercel.app/api';
 
 /// The roles a new user can register as.
 enum DocavailRole {
@@ -41,7 +50,12 @@ extension DocavailRoleApi on DocavailRole {
 }
 
 class UserInfoScreen extends StatefulWidget {
-  const UserInfoScreen({super.key});
+  const UserInfoScreen({super.key, this.phoneNumber});
+
+  /// Phone number collected on the previous (login/OTP) screen, if any.
+  /// Passed straight through to the existing-user check and, on to
+  /// pin.dart / login.dart, so the user never has to retype it.
+  final String? phoneNumber;
 
   @override
   State<UserInfoScreen> createState() => _UserInfoScreenState();
@@ -49,23 +63,104 @@ class UserInfoScreen extends StatefulWidget {
 
 class _UserInfoScreenState extends State<UserInfoScreen> {
   final TextEditingController _nameController = TextEditingController();
+  final TextEditingController _idController = TextEditingController();
 
   DocavailRole? _selectedRole;
   bool _isRegistering = false;
 
+  Timer? _debounce;
+
+  /// Cache of the last background existing-user check, keyed by
+  /// "idNumber|phoneNumber" so `_finishSetup` can reuse it instead of
+  /// firing another request the moment "Proceed" is tapped.
+  Map<String, dynamic>? _existingCheckResult;
+
+  @override
+  void initState() {
+    super.initState();
+    _idController.addListener(_onIdChanged);
+  }
+
   @override
   void dispose() {
+    _debounce?.cancel();
+    _idController.removeListener(_onIdChanged);
     _nameController.dispose();
+    _idController.dispose();
     super.dispose();
   }
 
-  /// Shows a brief loading spinner, then hands off to pin.dart to create
-  /// a PIN. No backend check happens yet — see TODO below.
+  String get _checkKey =>
+      '${_idController.text.trim()}|${widget.phoneNumber ?? ''}';
+
+  void _onIdChanged() {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 600), _runBackgroundCheck);
+  }
+
+  /// Silently checks whether an account already exists for the ID (and
+  /// phone number, if we have one) the user is typing — fired in the
+  /// background while they're still filling out the rest of the form, so
+  /// by the time they tap "Proceed" the result (and therefore the
+  /// "Login Instead" card) is usually already available.
+  Future<void> _runBackgroundCheck() async {
+    final idNumber = _idController.text.trim();
+    if (idNumber.isEmpty) return;
+
+    final key = _checkKey;
+    try {
+      final result = await _fetchExistingCheck(idNumber);
+      if (!mounted) return;
+      // Only cache if the field hasn't changed again while we were waiting.
+      if (key == _checkKey) {
+        _existingCheckResult = {...result, 'key': key};
+      }
+    } catch (_) {
+      // Non-fatal — this is just a background convenience check. If it
+      // fails, `_finishSetup` will retry synchronously before proceeding.
+    }
+  }
+
+  Future<Map<String, dynamic>> _fetchExistingCheck(String idNumber) async {
+    final uri = Uri.parse('$_apiBaseUrl/userinfo').replace(queryParameters: {
+      'id_number': idNumber,
+      if (widget.phoneNumber != null) 'phone_number': widget.phoneNumber!,
+    });
+    final response = await http.get(uri).timeout(const Duration(seconds: 8));
+    if (response.statusCode != 200) {
+      throw Exception('Existing-user check failed (${response.statusCode})');
+    }
+    return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
+  /// Returns a fresh answer to "does this account already exist", reusing
+  /// the cached background-check result when it's still up to date.
+  Future<Map<String, dynamic>?> _resolveExistingCheck(String idNumber) async {
+    final key = _checkKey;
+    if (_existingCheckResult != null && _existingCheckResult!['key'] == key) {
+      return _existingCheckResult;
+    }
+    try {
+      final result = await _fetchExistingCheck(idNumber);
+      _existingCheckResult = {...result, 'key': key};
+      return _existingCheckResult;
+    } catch (_) {
+      // If the check can't be reached, let account creation proceed —
+      // the 409 duplicate check on the backend is still a safety net.
+      return null;
+    }
+  }
+
   Future<void> _finishSetup() async {
     final name = _nameController.text.trim();
+    final idNumber = _idController.text.trim();
 
     if (name.isEmpty) {
       _showMessage('Enter your name first.');
+      return;
+    }
+    if (idNumber.isEmpty) {
+      _showMessage('Enter your ID number first.');
       return;
     }
     if (_selectedRole == null) {
@@ -76,21 +171,113 @@ class _UserInfoScreenState extends State<UserInfoScreen> {
     FocusScope.of(context).unfocus();
     setState(() => _isRegistering = true);
 
-    // TODO: this is currently just a spinner + fixed delay — no lookup
-    // happens yet. Swap this back to a real hospital-directory / existing-
-    // account check (via userinfo.js) once that endpoint is deployed and
-    // reachable, then branch into the "already exists" vs "confirmed" flow.
-    await Future<void>.delayed(const Duration(milliseconds: 900));
+    final existing = await _resolveExistingCheck(idNumber);
 
     if (!mounted) return;
     setState(() => _isRegistering = false);
+
+    if (existing != null && existing['exists'] == true) {
+      _showExistingUserDialog(idNumber);
+      return;
+    }
 
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(
         builder: (context) => PinScreen(
           fullName: name,
           role: _selectedRole!,
+          idNumber: idNumber,
+          phoneNumber: widget.phoneNumber,
           isLogin: false,
+        ),
+      ),
+    );
+  }
+
+  void _showExistingUserDialog(String idNumber) {
+    showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (dialogContext) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.symmetric(horizontal: 32),
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(24, 28, 24, 24),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 48,
+                height: 48,
+                decoration: const BoxDecoration(
+                  color: _DocavailColors.fieldFill,
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.person_search_rounded,
+                  color: _DocavailColors.navy,
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Account Already Exists',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 17,
+                  fontWeight: FontWeight.w700,
+                  color: _DocavailColors.heading,
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                "There's already an account with this ID. Log in instead.",
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 13.5, color: _DocavailColors.subtitle),
+              ),
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: ElevatedButton(
+                  onPressed: () {
+                    Navigator.of(dialogContext).pop();
+                    Navigator.of(context).pushReplacement(
+                      MaterialPageRoute(
+                        builder: (context) => IdLoginScreen(
+                          idNumber: idNumber,
+                          phoneNumber: widget.phoneNumber,
+                        ),
+                      ),
+                    );
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _DocavailColors.darkBlue,
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  child: const Text(
+                    'Login Instead',
+                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text(
+                  'Cancel',
+                  style: TextStyle(color: _DocavailColors.subtitle),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -206,6 +393,17 @@ class _UserInfoScreenState extends State<UserInfoScreen> {
           _buildNameField(),
           const SizedBox(height: 20),
           const Text(
+            'ID No.',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: _DocavailColors.heading,
+            ),
+          ),
+          const SizedBox(height: 8),
+          _buildIdField(),
+          const SizedBox(height: 20),
+          const Text(
             'Role',
             style: TextStyle(
               fontSize: 14,
@@ -233,6 +431,39 @@ class _UserInfoScreenState extends State<UserInfoScreen> {
         hintStyle: const TextStyle(color: _DocavailColors.fieldHint),
         prefixIcon: const Icon(
           Icons.person_outline,
+          color: _DocavailColors.fieldHint,
+          size: 20,
+        ),
+        filled: true,
+        fillColor: _DocavailColors.fieldFill,
+        contentPadding: const EdgeInsets.symmetric(vertical: 16),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide.none,
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide.none,
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: _DocavailColors.navy, width: 1.5),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildIdField() {
+    return TextField(
+      controller: _idController,
+      enabled: !_isRegistering,
+      textCapitalization: TextCapitalization.characters,
+      style: const TextStyle(fontSize: 15, color: _DocavailColors.heading),
+      decoration: InputDecoration(
+        hintText: 'e.g. EMP-00231',
+        hintStyle: const TextStyle(color: _DocavailColors.fieldHint),
+        prefixIcon: const Icon(
+          Icons.credit_card_outlined,
           color: _DocavailColors.fieldHint,
           size: 20,
         ),
