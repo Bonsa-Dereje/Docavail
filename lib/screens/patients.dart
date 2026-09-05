@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
+import 'selected_patient.dart';
+
 /// Brand + status colors used across the Patient Brief screen.
 class _PatientColors {
   static const navy = Color(0xFF0D2B9E);
@@ -135,6 +137,7 @@ class PatientBriefScreen extends StatefulWidget {
     this.apiBaseUrl = _defaultApiBaseUrl,
     this.onStartConsultation,
     this.onViewPatientHistory,
+    this.autoStartConsultation = false,
   });
 
   /// public.patients.id (uuid) for the patient this brief is for. Left
@@ -150,13 +153,19 @@ class PatientBriefScreen extends StatefulWidget {
   /// _fetchPatientData rather than a constructor change.
   final String? sessionToken;
 
-  /// TODO: replace with your deployed Vercel URL (or read it from a
-  /// shared config/env file if the app already has one).
-  static const String _defaultApiBaseUrl = 'https://YOUR-DEPLOYMENT.vercel.app';
+  /// Deployed Vercel API base — same host the rest of the app uses
+  /// (login.dart / profile.dart / auth_service.dart).
+  static const String _defaultApiBaseUrl = 'https://docavail-endpoints.vercel.app';
   final String apiBaseUrl;
 
   final VoidCallback? onStartConsultation;
   final VoidCallback? onViewPatientHistory;
+
+  /// When true, the screen opens with consultation already treated as
+  /// started (button shows "End Consultation" immediately) — set this
+  /// when navigating here from the queue's "Start Consult" button, which
+  /// already kicked off the consultation on the queue card itself.
+  final bool autoStartConsultation;
 
   @override
   State<PatientBriefScreen> createState() => _PatientBriefScreenState();
@@ -164,12 +173,24 @@ class PatientBriefScreen extends StatefulWidget {
 
 class _PatientBriefScreenState extends State<PatientBriefScreen> {
   Future<_PatientBriefData>? _dataFuture;
+  late bool _consultationActive = widget.autoStartConsultation;
+
+  /// Concrete patient id this screen last fetched for. Lets
+  /// [_effectivePatientId] tell a "still the same patient" rebuild apart
+  /// from a "different patient selected" one without refetching or
+  /// resetting the consultation button on every tab bounce.
+  String? _loadedPatientId;
 
   @override
   void initState() {
     super.initState();
-    if (widget.patientId != null) {
-      _dataFuture = _fetchPatientData();
+    _syncFromSource();
+    if (widget.autoStartConsultation) {
+      // Fire the callback once the first frame is up, same as if the
+      // user had pressed the button here themselves.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) widget.onStartConsultation?.call();
+      });
     }
   }
 
@@ -177,22 +198,59 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
   void didUpdateWidget(covariant PatientBriefScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
     // If the caller re-pushes/rebuilds this screen with a different (or
-    // newly-available) patient, kick off a fresh fetch for it.
+    // newly-available) patient, kick off a fresh fetch for it. The
+    // AppShell tab rebuilds this widget with SelectedPatient.patientId on
+    // every tab switch, so opening a new patient from the queue lands here.
     if (widget.patientId != oldWidget.patientId) {
-      setState(() {
-        _dataFuture = widget.patientId != null ? _fetchPatientData() : null;
-      });
+      setState(_syncFromSource);
     }
   }
 
-  Future<_PatientBriefData> _fetchPatientData() async {
+  /// Which patient to show: an explicit [PatientBriefScreen.patientId]
+  /// wins (pushed routes), otherwise the globally selected patient (the
+  /// Patients tab).
+  String? _effectivePatientId() =>
+      widget.patientId ?? SelectedPatient.patientId;
+
+  /// Re-reads the source of truth ([_effectivePatientId]) and, when it
+  /// points at a patient this screen hasn't loaded yet, fetches it and
+  /// syncs the consultation button's start state.
+  void _syncFromSource() {
+    final id = _effectivePatientId();
+    if (id == null) {
+      _loadedPatientId = null;
+      _dataFuture = null;
+      return;
+    }
+    if (id == _loadedPatientId) return;
+    _loadedPatientId = id;
+    _dataFuture = _fetchPatientData(id);
+    _consultationActive = widget.patientId != null
+        ? widget.autoStartConsultation
+        : SelectedPatient.autoStartConsultation;
+  }
+
+  void _toggleConsultation() {
+    setState(() => _consultationActive = !_consultationActive);
+    if (_consultationActive) {
+      widget.onStartConsultation?.call();
+    }
+    // TODO: if ending here should also update the queue's button back to
+    // "Start Consult", that needs to flow back up through a callback
+    // (e.g. widget.onEndConsultation) since queue.dart's button state
+    // lives on the queue screen, not here.
+  }
+
+  Future<_PatientBriefData> _fetchPatientData(String patientId) async {
     final uri = Uri.parse('${widget.apiBaseUrl}/api/patients_data_fetch').replace(
       queryParameters: {
-        'patient_id': widget.patientId!,
+        'patient_id': patientId,
       },
     );
 
-    final response = await http.get(uri);
+    final response = await http
+      .get(uri)
+      .timeout(const Duration(seconds: 10));
 
     if (response.statusCode != 200) {
       final body = _tryDecode(response.body);
@@ -213,9 +271,10 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
   }
 
   void _retry() {
-    if (widget.patientId == null) return;
+    final id = _effectivePatientId();
+    if (id == null) return;
     setState(() {
-      _dataFuture = _fetchPatientData();
+      _dataFuture = _fetchPatientData(id);
     });
   }
 
@@ -473,7 +532,7 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
   Widget _buildPatientCard(_PatientBriefData data) {
     // NOTE: no `mrn` column exists in public.patients, so the patient's
     // id is used in its place below — swap this out if you add one.
-    final id = widget.patientId ?? '';
+    final id = _effectivePatientId() ?? '';
     final mrnLabel = id.length >= 8
         ? id.substring(0, 8).toUpperCase()
         : id.toUpperCase();
@@ -774,6 +833,7 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
   }
 
   Widget _buildStartConsultationButton() {
+    final bool active = _consultationActive;
     return SafeArea(
       top: false,
       child: Padding(
@@ -782,23 +842,29 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
           width: double.infinity,
           height: 56,
           child: ElevatedButton(
-            onPressed: widget.onStartConsultation,
+            onPressed: _toggleConsultation,
             style: ElevatedButton.styleFrom(
-              backgroundColor: _PatientColors.navy,
+              backgroundColor:
+                  active ? _PatientColors.allergyIconBg : _PatientColors.navy,
               foregroundColor: Colors.white,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(14),
               ),
               elevation: 0,
             ),
-            child: const Row(
+            child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.medical_services_outlined, size: 20),
-                SizedBox(width: 10),
+                Icon(
+                  active
+                      ? Icons.stop_circle_outlined
+                      : Icons.medical_services_outlined,
+                  size: 20,
+                ),
+                const SizedBox(width: 10),
                 Text(
-                  'Start Consultation',
-                  style: TextStyle(
+                  active ? 'End Consultation' : 'Start Consultation',
+                  style: const TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w700,
                   ),

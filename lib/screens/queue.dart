@@ -3,7 +3,9 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
+import 'app_shell.dart';
 import 'patients.dart';
+import 'selected_patient.dart';
 
 /// Brand + status colors used across the Queue screen.
 class _QueueColors {
@@ -35,6 +37,12 @@ class _QueueColors {
 enum _PatientTag { urgent, newPatient, followUp, routine }
 
 enum _PatientStatus { waiting, inConsult, discharged }
+
+/// Local (client-side only) state for the "Start Consult" button on a
+/// queue card. Not persisted anywhere yet — resets if the queue screen
+/// is disposed/rebuilt, since the API has no consultation-status column
+/// (see _QueuePatient.fromJson's comment above).
+enum _ConsultButtonState { idle, starting, active }
 
 class _QueuePatient {
   final String id;
@@ -128,11 +136,11 @@ class QueueScreen extends StatefulWidget {
   /// missing instead of fetching.
   final String? sessionToken;
 
-  /// TODO: replace with your deployed Vercel URL (or read it from a
-  /// shared config/env file if the app already has one). Keep this in
-  /// sync with the same constant in patients.dart — consider centralizing
+  /// Deployed Vercel API base — same host the rest of the app uses
+  /// (login.dart / profile.dart / auth_service.dart). Keep this in sync
+  /// with the same constant in patients.dart — consider centralizing
   /// both in one shared config file.
-  static const String _defaultApiBaseUrl = 'https://YOUR-DEPLOYMENT.vercel.app';
+  static const String _defaultApiBaseUrl = 'https://docavail-endpoints.vercel.app';
   final String apiBaseUrl;
 
   @override
@@ -142,6 +150,10 @@ class QueueScreen extends StatefulWidget {
 class _QueueScreenState extends State<QueueScreen> {
   int _selectedFilter = 0;
   Future<List<_QueuePatient>>? _queueFuture;
+
+  /// Keyed by patient id. Drives the Start Consult / Starting / End
+  /// Session button on each card.
+  final Map<String, _ConsultButtonState> _consultStates = {};
 
   @override
   void initState() {
@@ -160,7 +172,9 @@ class _QueueScreenState extends State<QueueScreen> {
   Future<List<_QueuePatient>> _fetchQueue() async {
     final uri = Uri.parse('${widget.apiBaseUrl}/api/queue_fetch');
 
-    final response = await http.get(uri);
+    final response = await http
+        .get(uri)
+        .timeout(const Duration(seconds: 10));
 
     if (response.statusCode != 200) {
       final body = _tryDecode(response.body);
@@ -214,22 +228,58 @@ class _QueueScreenState extends State<QueueScreen> {
     ];
   }
 
-  void _openPatientBrief(_QueuePatient patient) {
-    // Navigating directly rather than through AppShellScope.switchTab(1)
-    // so the actual tapped patient's id travels with it — switchTab alone
-    // has no way to carry that. If Patient Brief should stay a bottom-nav
-    // tab (no back button, as patients.dart's top bar comment assumes),
-    // wire this through your AppShell's shared state instead once you can
-    // share app_shell.dart.
+  void _openPatientBrief(_QueuePatient patient, {bool autoStartConsultation = false}) {
+    // Open the patient in the Patients tab (which keeps the bottom nav bar
+    // visible) instead of pushing a bare route over the queue. The global
+    // holds on to whichever patient was last opened; the Patients tab reads
+    // it via AppShell on the next rebuild.
+    SelectedPatient.select(
+      patient.id,
+      autoStartConsultation: autoStartConsultation,
+    );
+
+    final shell = AppShellScope.of(context);
+    if (shell != null) {
+      shell.switchTab(1);
+      return;
+    }
+
+    // Fallback when this screen is used outside AppShell (no tab to switch
+    // to) — keep the old push behavior so opening a patient still works.
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => PatientBriefScreen(
           patientId: patient.id,
           sessionToken: widget.sessionToken,
           apiBaseUrl: widget.apiBaseUrl,
+          autoStartConsultation: autoStartConsultation,
         ),
       ),
     );
+  }
+
+  void _handleConsultButtonTap(_QueuePatient patient) {
+    final state = _consultStates[patient.id] ?? _ConsultButtonState.idle;
+
+    if (state == _ConsultButtonState.starting) return; // already animating
+
+    if (state == _ConsultButtonState.active) {
+      // "End Session" tapped.
+      setState(() => _consultStates[patient.id] = _ConsultButtonState.idle);
+      // TODO: call your end-consultation endpoint here if you have one.
+      return;
+    }
+
+    // Idle -> starting: flash green, open Patient Brief with
+    // consultation pre-started there, then flip to red "End Session"
+    // after 3 seconds.
+    setState(() => _consultStates[patient.id] = _ConsultButtonState.starting);
+    _openPatientBrief(patient, autoStartConsultation: true);
+
+    Future.delayed(const Duration(seconds: 3), () {
+      if (!mounted) return;
+      setState(() => _consultStates[patient.id] = _ConsultButtonState.active);
+    });
   }
 
   @override
@@ -592,11 +642,32 @@ class _QueueScreenState extends State<QueueScreen> {
   }
 
   Widget _buildCardActions(_QueuePatient patient) {
+    final consultState = _consultStates[patient.id] ?? _ConsultButtonState.idle;
+
+    late final Color bg;
+    late final String label;
+    switch (consultState) {
+      case _ConsultButtonState.idle:
+        bg = _QueueColors.navy;
+        label = 'Start Consult';
+        break;
+      case _ConsultButtonState.starting:
+        bg = _QueueColors.followUpBar; // green
+        label = 'Starting…';
+        break;
+      case _ConsultButtonState.active:
+        bg = _QueueColors.urgentFg; // red
+        label = 'End Session';
+        break;
+    }
+
     return Row(
       children: [
         Expanded(
           child: SizedBox(
             height: 44,
+            // Plain card/"View Details" tap: just opens Patient Brief,
+            // never auto-starts consultation there.
             child: OutlinedButton(
               onPressed: () => _openPatientBrief(patient),
               style: OutlinedButton.styleFrom(
@@ -618,20 +689,20 @@ class _QueueScreenState extends State<QueueScreen> {
           child: SizedBox(
             height: 44,
             child: ElevatedButton(
-              onPressed: () {
-                // TODO: hook up "Start Consult" — placeholder for now.
-              },
+              onPressed: consultState == _ConsultButtonState.starting
+                  ? null
+                  : () => _handleConsultButtonTap(patient),
               style: ElevatedButton.styleFrom(
-                backgroundColor: _QueueColors.navy,
+                backgroundColor: bg,
                 foregroundColor: Colors.white,
                 elevation: 0,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
                 ),
               ),
-              child: const Text(
-                'Start Consult',
-                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+              child: Text(
+                label,
+                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
               ),
             ),
           ),

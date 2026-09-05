@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'patients.dart';
 import 'profile.dart';
 import 'queue.dart';
+import 'selected_patient.dart';
 
 /// Shared navigation shell for the app's primary tabs.
 ///
@@ -29,12 +30,6 @@ class _AppShellState extends State<AppShell> {
   static const Color _subtitle = Color(0xFF7A8194);
   static const Color _divider = Color(0xFFE3E5EC);
 
-  static const List<Widget> _tabs = [
-    QueueScreen(),
-    PatientBriefScreen(),
-    ProfileScreen(),
-  ];
-
   static const List<_NavItem> _navItems = [
     _NavItem(icon: Icons.grid_view_rounded, label: 'Queue'),
     _NavItem(icon: Icons.person_outline_rounded, label: 'Patients'),
@@ -55,7 +50,22 @@ class _AppShellState extends State<AppShell> {
         // IndexedStack keeps every tab's widget (and its state, e.g. scroll
         // position or filter selection) alive, only hiding the inactive ones
         // instead of rebuilding them from scratch on every tap.
-        body: IndexedStack(index: _selectedIndex, children: _tabs),
+        //
+        // The Patients tab is built with the currently-selected patient
+        // (SelectedPatient — set by the queue's "View Details"/"Start
+        // Consult" buttons) so PatientBriefScreen.didUpdateWidget re-fetches
+        // whenever a different patient is opened.
+        body: IndexedStack(
+          index: _selectedIndex,
+          children: [
+            QueueScreen(),
+            PatientBriefScreen(
+              patientId: SelectedPatient.patientId,
+              autoStartConsultation: SelectedPatient.autoStartConsultation,
+            ),
+            ProfileScreen(),
+          ],
+        ),
         bottomNavigationBar: _buildBottomNav(),
       ),
     );
