@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
 import 'app_shell.dart';
@@ -36,66 +38,78 @@ class _QueueColors {
 
 enum _PatientTag { urgent, newPatient, followUp, routine }
 
-enum _PatientStatus { waiting, inConsult, discharged }
+/// Everything this screen needs from a single load: this doctor's entire
+/// queue — every non-completed assignment from GET /api/patient_assign,
+/// already scoped to the doctor identified by the session `token`. A
+/// doctor can hold several assigned patients at once (the desktop admin
+/// stacks them), so this is a list; at most one of them is in an active
+/// consultation at any time.
+class _QueueLoadResult {
+  final List<_QueuePatient> patients;
 
-/// Local (client-side only) state for the "Start Consult" button on a
-/// queue card. Not persisted anywhere yet — resets if the queue screen
-/// is disposed/rebuilt, since the API has no consultation-status column
-/// (see _QueuePatient.fromJson's comment above).
-enum _ConsultButtonState { idle, starting, active }
+  const _QueueLoadResult({required this.patients});
+}
 
 class _QueuePatient {
+  /// public.patients.id of the assigned patient.
   final String id;
+
+  /// patient_assignments.id — sent to the start_consult / complete calls.
+  final String assignmentId;
+
+  /// True when this assignment is the doctor's current consultation
+  /// (status 'active'); false for queued-but-waiting ('assigned') ones.
+  final bool inConsultation;
+
   final String name;
   final String ageGender;
   final String waitLabel;
   final String detailLabel;
   final String detailText;
   final _PatientTag tag;
-  final _PatientStatus status;
 
   const _QueuePatient({
     required this.id,
+    required this.assignmentId,
+    required this.inConsultation,
     required this.name,
     required this.ageGender,
     required this.waitLabel,
     required this.detailLabel,
     required this.detailText,
     required this.tag,
-    required this.status,
   });
 
-  /// Builds a queue row from one entry of GET /api/queue_fetch's
-  /// `patients` array. See that endpoint's file header for the schema
-  /// caveats behind the choices below (no real status or tag columns
-  /// exist yet).
-  factory _QueuePatient.fromJson(Map<String, dynamic> json) {
+  /// Builds this doctor's queue card from one entry of GET
+  /// /api/patient_assign's `my_assignments` array — field names differ
+  /// from the old queue_fetch shape (`patient_id` not `id`,
+  /// `assigned_at` not `triaged_at`), so this isn't a drop-in rename of
+  /// the old `fromJson`.
+  factory _QueuePatient.fromAssignment(Map<String, dynamic> json) {
     final fullName = json['full_name'] as String? ?? 'Unknown Patient';
     final age = json['age'] as int?;
     final gender = json['gender'] as String?;
     final chiefComplaint = json['chief_complaint'] as String?;
     final triageLevel = json['triage_level'] as String?;
-    final triagedAt = json['triaged_at'] != null
-        ? DateTime.tryParse(json['triaged_at'] as String)
+    final assignedAt = json['assigned_at'] != null
+        ? DateTime.tryParse(json['assigned_at'] as String)
         : null;
 
     return _QueuePatient(
-      id: json['id'] as String,
+      id: json['patient_id'] as String,
+      assignmentId: json['assignment_id'] as String,
+      inConsultation: json['in_consultation'] == true,
       name: fullName,
       ageGender: [
         if (age != null) '$age y/o',
         if (gender != null && gender.isNotEmpty) gender,
       ].join(' • '),
-      waitLabel: _waitLabelFor(triagedAt),
+      waitLabel: _waitLabelFor(assignedAt),
       detailLabel: 'CHIEF COMPLAINT',
       detailText: chiefComplaint?.isNotEmpty == true
           ? chiefComplaint!
           : 'No chief complaint recorded.',
       tag: _tagFromTriageLevel(triageLevel),
-      // The endpoint only ever returns today's triaged patients — there's
-      // no column yet to tell "waiting" apart from "in consult" or
-      // "discharged", so everything comes back as waiting for now.
-      status: _PatientStatus.waiting,
     );
   }
 
@@ -131,9 +145,11 @@ class QueueScreen extends StatefulWidget {
   });
 
   /// The signed-in staff member's session token — same one profile.dart
-  /// and patients.dart send as GET .../?token=.... Nullable so existing
-  /// no-arg call sites still compile; shows a "not signed in" state when
-  /// missing instead of fetching.
+  /// and patients.dart send as GET .../?token=.... When omitted (nullable
+  /// so existing no-arg call sites, including AppShell's Queue tab, still
+  /// compile), the screen resolves the token from secure storage itself —
+  /// so a still-logged-in doctor gets their assignment without the caller
+  /// having to thread the token through.
   final String? sessionToken;
 
   /// Deployed Vercel API base — same host the rest of the app uses
@@ -147,46 +163,193 @@ class QueueScreen extends StatefulWidget {
   State<QueueScreen> createState() => _QueueScreenState();
 }
 
-class _QueueScreenState extends State<QueueScreen> {
-  int _selectedFilter = 0;
-  Future<List<_QueuePatient>>? _queueFuture;
+class _QueueScreenState extends State<QueueScreen>
+    with WidgetsBindingObserver {
+  /// Same secure-storage key profile.dart reads/writes — lets this screen
+  /// resolve the signed-in doctor's token by itself instead of relying on
+  /// a caller to thread `sessionToken` through (AppShell constructs the
+  /// Queue tab without one).
+  static const _storage = FlutterSecureStorage();
 
-  /// Keyed by patient id. Drives the Start Consult / Starting / End
-  /// Session button on each card.
-  final Map<String, _ConsultButtonState> _consultStates = {};
+  /// Current queue data, plus loading/error state, tracked as plain fields
+  /// instead of a Future handed to a FutureBuilder. A FutureBuilder resets
+  /// to its "waiting" state every time it's given a new Future instance —
+  /// and the poll timer was doing exactly that once a second, so the whole
+  /// list flashed back to the loading spinner on every tick even though
+  /// the data hadn't really gone away. Keeping the result in state and
+  /// only touching `_loading`/`_errorMessage` on the very first load (or a
+  /// manual retry) means background polls just swap the list contents in
+  /// place with no flicker.
+  bool _loading = true;
+  String? _errorMessage;
+  _QueueLoadResult? _queueResult;
+
+  /// Guards against overlapping poll requests: if a fetch triggered by one
+  /// tick of the 1s timer is still waiting on the network when the next
+  /// tick fires, skip that tick rather than firing a second request whose
+  /// (possibly out-of-order) response could stomp on a newer one.
+  bool _refreshInFlight = false;
+
+  /// Assignment ids whose start_consult call (patient_assign.js
+  /// {action:"start_consult"}) is in flight — those cards show "Starting…".
+  /// A doctor can tap several cards quickly, so track each id separately.
+  final Set<String> _startingConsultationIds = {};
+
+  /// Assignment ids whose complete call (patient_assign.js
+  /// {action:"complete"}) is in flight — those cards show "Ending…".
+  final Set<String> _completingConsultationIds = {};
+
+  /// True while POST .../patient_assign {action:"run"} is in flight —
+  /// this is the stand-in "desktop admin" trigger, see patient_assign.js.
+  bool _runningAssignment = false;
+
+  /// How often the queue re-checks GET /api/patient_assign while mounted,
+  /// so a patient assigned from the desktop admin tool appears here without
+  /// the doctor needing to restart the app or switch tabs.
+  static const _pollInterval = Duration(seconds: 1);
+  Timer? _pollTimer;
 
   @override
   void initState() {
     super.initState();
-    _queueFuture = _fetchQueue();
+    WidgetsBinding.instance.addObserver(this);
+    _loadQueue();
+    _startPolling();
   }
 
   @override
   void didUpdateWidget(covariant QueueScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // Nothing queue-fetch-relevant depends on sessionToken anymore (the
-    // endpoint doesn't require it) — kept only for the didUpdateWidget
-    // override shape in case that changes again later.
+    if (oldWidget.sessionToken != widget.sessionToken) {
+      // A different (or newly available) session token changes whose
+      // assignment "mine" means, so reload.
+      _loadQueue();
+      _startPolling();
+    }
   }
 
-  Future<List<_QueuePatient>> _fetchQueue() async {
-    final uri = Uri.parse('${widget.apiBaseUrl}/api/queue_fetch');
+  @override
+  void dispose() {
+    _stopPolling();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
 
-    final response = await http
-        .get(uri)
-        .timeout(const Duration(seconds: 10));
+  /// Pauses the poll while the app is backgrounded — no desktop assignment
+  /// is going to reach this doctor while they're not looking at the app, so
+  /// there's no point keeping the request loop running.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _startPolling();
+    } else {
+      _stopPolling();
+    }
+  }
 
-    if (response.statusCode != 200) {
-      final body = _tryDecode(response.body);
-      final message = body?['error'] as String? ?? 'Failed to load queue';
+  void _startPolling() {
+    _stopPolling();
+    // Poll regardless of the widget-level token — _fetchQueue resolves the
+    // stored token itself and no-ops cheaply when nobody is signed in.
+    if (!mounted) return;
+    _pollTimer = Timer.periodic(_pollInterval, (_) => _refreshAssignment());
+  }
+
+  void _stopPolling() {
+    _pollTimer?.cancel();
+    _pollTimer = null;
+  }
+
+  /// Background re-check of this doctor's assignment (run by the poll
+  /// timer) so an assignment made on the desktop admin tool shows up here
+  /// automatically. Only swaps the result on success — a transient network
+  /// error keeps the last-known assignment on screen and the next poll
+  /// retries. Updates `_queueResult` directly (not `_loading`), so a
+  /// successful poll just swaps the list in place instead of flashing the
+  /// loading spinner every second.
+  Future<void> _refreshAssignment() async {
+    if (_refreshInFlight) return;
+    _refreshInFlight = true;
+    try {
+      final result = await _fetchQueue();
+      if (!mounted) return;
+      setState(() {
+        _queueResult = result;
+        _errorMessage = null;
+      });
+    } catch (_) {
+      // Keep whatever was already showing; try again next cycle.
+    } finally {
+      _refreshInFlight = false;
+    }
+  }
+
+  /// Full (foreground) load: shows the spinner/error states. Used for the
+  /// very first load, a token change, and manual retry — everywhere else
+  /// (the poll timer, post-action refreshes) uses `_refreshAssignment` so
+  /// existing data stays on screen while it re-checks.
+  Future<void> _loadQueue() async {
+    setState(() {
+      _loading = true;
+      _errorMessage = null;
+    });
+    try {
+      final result = await _fetchQueue();
+      if (!mounted) return;
+      setState(() {
+        _queueResult = result;
+        _loading = false;
+      });
+    } catch (err) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = err.toString();
+        _loading = false;
+      });
+    }
+  }
+
+  /// Resolves the signed-in doctor's session token: an explicit
+  /// constructor override wins, otherwise fall back to the token saved by
+  /// login (same secure-storage key profile.dart uses). Returns null when
+  /// nobody is signed in.
+  Future<String?> _resolveToken() async {
+    final explicit = widget.sessionToken;
+    if (explicit != null && explicit.isNotEmpty) return explicit;
+    return _storage.read(key: 'session_token');
+  }
+
+  /// Loads only this doctor's own assignment — GET /api/patient_assign
+  /// already scopes `my_assignment` to the doctor identified by `token`,
+  /// so there's no separate full-roster fetch to make or filter here.
+  Future<_QueueLoadResult> _fetchQueue() async {
+    // No signed-in doctor -> nothing to fetch; show the empty state.
+    final token = await _resolveToken();
+    if (token == null || token.isEmpty) {
+      return const _QueueLoadResult(patients: []);
+    }
+
+    final assignUri = Uri.parse(
+      '${widget.apiBaseUrl}/api/patient_assign?token=${Uri.encodeQueryComponent(token)}',
+    );
+
+    final assignResponse = await http.get(assignUri).timeout(const Duration(seconds: 10));
+
+    if (assignResponse.statusCode != 200) {
+      final body = _tryDecode(assignResponse.body);
+      final message = body?['error'] as String? ?? 'Failed to load your assignment';
       throw Exception(message);
     }
 
-    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
-    final patientsJson = (decoded['patients'] as List<dynamic>?) ?? const [];
-    return patientsJson
-        .map((e) => _QueuePatient.fromJson(e as Map<String, dynamic>))
-        .toList();
+    final assignDecoded = jsonDecode(assignResponse.body) as Map<String, dynamic>;
+    final mineList =
+        (assignDecoded['my_assignments'] as List<dynamic>?) ?? const [];
+
+    return _QueueLoadResult(
+      patients: mineList
+          .map((e) => _QueuePatient.fromAssignment(e as Map<String, dynamic>))
+          .toList(),
+    );
   }
 
   Map<String, dynamic>? _tryDecode(String body) {
@@ -198,34 +361,134 @@ class _QueueScreenState extends State<QueueScreen> {
   }
 
   void _retry() {
-    setState(() {
-      _queueFuture = _fetchQueue();
-    });
+    _loadQueue();
   }
 
-  List<_QueuePatient> _filtered(List<_QueuePatient> patients) {
-    switch (_selectedFilter) {
-      case 1:
-        return patients.where((p) => p.status == _PatientStatus.waiting).toList();
-      case 2:
-        return patients.where((p) => p.status == _PatientStatus.inConsult).toList();
-      case 3:
-        return patients.where((p) => p.status == _PatientStatus.discharged).toList();
-      default:
-        return patients;
+  /// The stand-in "desktop admin" trigger — see patient_assign.js's
+  /// {action:"run"} for why this lives on the mobile app for now. Grabs
+  /// unassigned patients and free doctors and randomly pairs them, then
+  /// reloads the queue so the app can pick up whatever landed on this
+  /// doctor.
+  Future<void> _runAutoAssign() async {
+    if (_runningAssignment) return;
+    setState(() => _runningAssignment = true);
+
+    try {
+      final uri = Uri.parse('${widget.apiBaseUrl}/api/patient_assign');
+      final response = await http
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'action': 'run'}),
+          )
+          .timeout(const Duration(seconds: 10));
+
+      if (response.statusCode != 200) {
+        final body = _tryDecode(response.body);
+        throw Exception(body?['error'] as String? ?? 'Failed to assign patients');
+      }
+
+      if (!mounted) return;
+      await _refreshAssignment();
+    } catch (err) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Auto-assign failed: $err')),
+      );
+    } finally {
+      if (mounted) setState(() => _runningAssignment = false);
     }
   }
 
-  List<String> _filterLabels(List<_QueuePatient> patients) {
-    final waiting = patients.where((p) => p.status == _PatientStatus.waiting).length;
-    final inConsult = patients.where((p) => p.status == _PatientStatus.inConsult).length;
-    final discharged = patients.where((p) => p.status == _PatientStatus.discharged).length;
-    return [
-      'All Patients',
-      'Waiting ($waiting)',
-      'In Consult ($inConsult)',
-      'Discharged ($discharged)',
-    ];
+  /// Ends the doctor's consultation on one assignment (patient_assign.js
+  /// {action:"complete"}), then reloads so the card drops out of the queue.
+  Future<void> _completeAssignment(String assignmentId) async {
+    if (_completingConsultationIds.contains(assignmentId)) return;
+    final token = await _resolveToken();
+    if (token == null || token.isEmpty) return;
+    setState(() => _completingConsultationIds.add(assignmentId));
+
+    try {
+      final uri = Uri.parse('${widget.apiBaseUrl}/api/patient_assign');
+      final response = await http
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'action': 'complete',
+              'token': token,
+              'assignment_id': assignmentId,
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
+
+      if (response.statusCode != 200) {
+        final body = _tryDecode(response.body);
+        throw Exception(body?['error'] as String? ?? 'Failed to end session');
+      }
+
+      if (!mounted) return;
+      await _refreshAssignment();
+    } catch (err) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Couldn\'t end session: $err')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _completingConsultationIds.remove(assignmentId));
+      }
+    }
+  }
+
+  /// Moves one of the doctor's queued patients into the single
+  /// consultation slot (patient_assign.js {action:"start_consult"}). The
+  /// server demotes whatever else was in the slot first, so the card the
+  /// doctor taps becomes the active one and the previous one drops back
+  /// to waiting. Opens the Patient Brief optimistically, then reloads.
+  Future<void> _startConsultation(_QueuePatient patient) async {
+    if (_startingConsultationIds.contains(patient.assignmentId) ||
+        _completingConsultationIds.contains(patient.assignmentId)) {
+      return;
+    }
+    final token = await _resolveToken();
+    if (token == null || token.isEmpty) return;
+    setState(() => _startingConsultationIds.add(patient.assignmentId));
+    _openPatientBrief(patient, autoStartConsultation: true);
+
+    try {
+      final uri = Uri.parse('${widget.apiBaseUrl}/api/patient_assign');
+      final response = await http
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'action': 'start_consult',
+              'token': token,
+              'assignment_id': patient.assignmentId,
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
+
+      if (response.statusCode != 200) {
+        final body = _tryDecode(response.body);
+        throw Exception(
+          body?['error'] as String? ?? 'Failed to start consultation',
+        );
+      }
+
+      if (!mounted) return;
+      await _refreshAssignment();
+    } catch (err) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Couldn\'t start consultation: $err')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _startingConsultationIds.remove(patient.assignmentId));
+      }
+    }
   }
 
   void _openPatientBrief(_QueuePatient patient, {bool autoStartConsultation = false}) {
@@ -258,28 +521,16 @@ class _QueueScreenState extends State<QueueScreen> {
     );
   }
 
+  /// Routed from each queue card's consultation button. The card that is
+  /// currently in consultation shows "End Session" (completes it); every
+  /// other card shows "Start Consult" (moves it into the single
+  /// consultation slot, demoting whatever was there).
   void _handleConsultButtonTap(_QueuePatient patient) {
-    final state = _consultStates[patient.id] ?? _ConsultButtonState.idle;
-
-    if (state == _ConsultButtonState.starting) return; // already animating
-
-    if (state == _ConsultButtonState.active) {
-      // "End Session" tapped.
-      setState(() => _consultStates[patient.id] = _ConsultButtonState.idle);
-      // TODO: call your end-consultation endpoint here if you have one.
+    if (patient.inConsultation) {
+      _completeAssignment(patient.assignmentId);
       return;
     }
-
-    // Idle -> starting: flash green, open Patient Brief with
-    // consultation pre-started there, then flip to red "End Session"
-    // after 3 seconds.
-    setState(() => _consultStates[patient.id] = _ConsultButtonState.starting);
-    _openPatientBrief(patient, autoStartConsultation: true);
-
-    Future.delayed(const Duration(seconds: 3), () {
-      if (!mounted) return;
-      setState(() => _consultStates[patient.id] = _ConsultButtonState.active);
-    });
+    _startConsultation(patient);
   }
 
   @override
@@ -292,16 +543,17 @@ class _QueueScreenState extends State<QueueScreen> {
           children: [
             _buildTopBar(),
             Expanded(
-              child: FutureBuilder<List<_QueuePatient>>(
-                future: _queueFuture,
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState != ConnectionState.done) {
+              child: Builder(
+                builder: (context) {
+                  if (_loading && _queueResult == null) {
                     return _buildLoading();
                   }
-                  if (snapshot.hasError) {
-                    return _buildError(snapshot.error.toString());
+                  if (_errorMessage != null && _queueResult == null) {
+                    return _buildError(_errorMessage!);
                   }
-                  return _buildQueueList(snapshot.data ?? const []);
+                  final result = _queueResult;
+                  if (result == null) return _buildEmptyState();
+                  return _buildQueueList(result);
                 },
               ),
             ),
@@ -373,26 +625,16 @@ class _QueueScreenState extends State<QueueScreen> {
     );
   }
 
-  Widget _buildQueueList(List<_QueuePatient> allPatients) {
-    final filters = _filterLabels(allPatients);
-    final patients = _filtered(allPatients);
+  Widget _buildQueueList(_QueueLoadResult result) {
+    final patients = result.patients;
 
-    return Column(
-      children: [
-        _buildFilterRow(filters),
-        const SizedBox(height: 16),
-        Expanded(
-          child: patients.isEmpty
-              ? _buildEmptyState()
-              : ListView.separated(
-                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-                  itemCount: patients.length,
-                  separatorBuilder: (_, __) => const SizedBox(height: 16),
-                  itemBuilder: (context, index) =>
-                      _buildPatientCard(patients[index]),
-                ),
-        ),
-      ],
+    if (patients.isEmpty) return _buildEmptyState();
+
+    return ListView.separated(
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+      itemCount: patients.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 16),
+      itemBuilder: (context, index) => _buildPatientCard(patients[index]),
     );
   }
 
@@ -408,7 +650,7 @@ class _QueueScreenState extends State<QueueScreen> {
           ),
           const SizedBox(height: 12),
           const Text(
-            'No patients in this list',
+            'No patient assigned to you right now',
             style: TextStyle(
               fontSize: 14,
               fontWeight: FontWeight.w600,
@@ -435,7 +677,7 @@ class _QueueScreenState extends State<QueueScreen> {
           ),
           const Expanded(
             child: Text(
-              'My Queue',
+              'My Patients',
               textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 20,
@@ -444,49 +686,28 @@ class _QueueScreenState extends State<QueueScreen> {
               ),
             ),
           ),
-          const Icon(
-            Icons.filter_list_rounded,
-            color: _QueueColors.heading,
-            size: 24,
+          // Stand-in for the desktop admin's "assign" action — see
+          // patient_assign.js's {action:"run"}. Remove once the desktop
+          // tool exists and does this instead.
+          IconButton(
+            tooltip: 'Auto-assign patients (temporary)',
+            onPressed: _runningAssignment ? null : _runAutoAssign,
+            icon: _runningAssignment
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: _QueueColors.navy,
+                    ),
+                  )
+                : const Icon(
+                    Icons.shuffle_rounded,
+                    color: _QueueColors.heading,
+                    size: 22,
+                  ),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildFilterRow(List<String> filters) {
-    return SizedBox(
-      height: 44,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 20),
-        itemCount: filters.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 10),
-        itemBuilder: (context, index) {
-          final bool selected = index == _selectedFilter;
-          return GestureDetector(
-            onTap: () => setState(() => _selectedFilter = index),
-            child: Container(
-              alignment: Alignment.center,
-              padding: const EdgeInsets.symmetric(horizontal: 18),
-              decoration: BoxDecoration(
-                color: selected ? _QueueColors.navy : Colors.white,
-                borderRadius: BorderRadius.circular(22),
-                border: Border.all(
-                  color: selected ? _QueueColors.navy : _QueueColors.divider,
-                ),
-              ),
-              child: Text(
-                filters[index],
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: selected ? Colors.white : _QueueColors.heading,
-                ),
-              ),
-            ),
-          );
-        },
       ),
     );
   }
@@ -642,23 +863,29 @@ class _QueueScreenState extends State<QueueScreen> {
   }
 
   Widget _buildCardActions(_QueuePatient patient) {
-    final consultState = _consultStates[patient.id] ?? _ConsultButtonState.idle;
+    // The card currently in consultation shows the red "End Session"
+    // button; every other (waiting) card shows "Start Consult", which
+    // moves it into that single consultation slot server-side.
+    final bool inConsultation = patient.inConsultation;
+    final bool starting = _startingConsultationIds.contains(patient.assignmentId);
+    final bool completing = _completingConsultationIds.contains(patient.assignmentId);
 
     late final Color bg;
     late final String label;
-    switch (consultState) {
-      case _ConsultButtonState.idle:
-        bg = _QueueColors.navy;
-        label = 'Start Consult';
-        break;
-      case _ConsultButtonState.starting:
-        bg = _QueueColors.followUpBar; // green
-        label = 'Starting…';
-        break;
-      case _ConsultButtonState.active:
-        bg = _QueueColors.urgentFg; // red
-        label = 'End Session';
-        break;
+    late final bool enabled;
+
+    if (inConsultation) {
+      bg = _QueueColors.urgentFg; // red
+      label = completing ? 'Ending…' : 'End Session';
+      enabled = !completing;
+    } else if (starting) {
+      bg = _QueueColors.followUpBar; // green
+      label = 'Starting…';
+      enabled = false;
+    } else {
+      bg = _QueueColors.navy;
+      label = 'Start Consult';
+      enabled = true;
     }
 
     return Row(
@@ -689,11 +916,12 @@ class _QueueScreenState extends State<QueueScreen> {
           child: SizedBox(
             height: 44,
             child: ElevatedButton(
-              onPressed: consultState == _ConsultButtonState.starting
-                  ? null
-                  : () => _handleConsultButtonTap(patient),
+              onPressed: enabled
+                  ? () => _handleConsultButtonTap(patient)
+                  : null,
               style: ElevatedButton.styleFrom(
                 backgroundColor: bg,
+                disabledBackgroundColor: bg.withValues(alpha: 0.6),
                 foregroundColor: Colors.white,
                 elevation: 0,
                 shape: RoundedRectangleBorder(
