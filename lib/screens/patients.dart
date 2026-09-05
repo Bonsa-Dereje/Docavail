@@ -1,4 +1,7 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 /// Brand + status colors used across the Patient Brief screen.
 class _PatientColors {
@@ -13,10 +16,6 @@ class _PatientColors {
 
   static const waitChipBg = Color(0xFFEFE9DA);
   static const waitChipFg = Color(0xFF7A6A3D);
-
-  static const urgentChipBg = Color(0xFFFCE9E9);
-  static const urgentChipFg = Color(0xFFD3323C);
-  static const urgentChipBorder = Color(0xFFF6C9C9);
 
   static const allergyBg = Color(0xFFFCD9D9);
   static const allergyFg = Color(0xFFB01F28);
@@ -47,35 +46,181 @@ class _VitalStat {
   });
 }
 
-class PatientBriefScreen extends StatelessWidget {
-  const PatientBriefScreen({
-    super.key,
-    this.patientLabel = 'P1',
-    this.patientName = 'Patient 001',
-    this.mrn = '987654321',
-    this.age = 45,
-    this.gender = 'M',
-    this.waitLabel = '45m Wait',
-    this.triageLevel = 'Level 2 - Urgent',
-    this.allergyName = 'Penicillin',
-    this.allergyDetail =
-        'History of severe anaphylaxis. Verify all medications prior to administration.',
-    this.lastUpdatedLabel = 'Last updated 12 mins ago',
-    this.onStartConsultation,
+/// Fetched shape of a single row from GET /api/patients_data_fetch.
+/// Only the fields the Patient Brief screen actually renders are parsed
+/// here — `medications` and the fuller `triage` fields (level, chief
+/// complaint, notes) come back from the API too but aren't surfaced in
+/// this screen yet.
+class _PatientBriefData {
+  final String fullName;
+  final String? phoneNumber;
+  final int? age;
+  final String? gender;
+  final List<_AllergyEntry> allergies;
+  final DateTime? triagedAt;
+
+  const _PatientBriefData({
+    required this.fullName,
+    this.phoneNumber,
+    this.age,
+    this.gender,
+    required this.allergies,
+    this.triagedAt,
   });
 
-  final String patientLabel;
-  final String patientName;
-  final String mrn;
-  final int age;
-  final String gender;
-  final String waitLabel;
-  final String triageLevel;
-  final String allergyName;
-  final String allergyDetail;
-  final String lastUpdatedLabel;
-  final VoidCallback? onStartConsultation;
+  factory _PatientBriefData.fromJson(Map<String, dynamic> json) {
+    final patient = (json['patient'] as Map<String, dynamic>?) ?? const {};
+    final allergiesJson = (json['allergies'] as List<dynamic>?) ?? const [];
+    final triage = json['triage'] as Map<String, dynamic>?;
 
+    return _PatientBriefData(
+      fullName: patient['full_name'] as String? ?? 'Unknown Patient',
+      phoneNumber: patient['phone_number'] as String?,
+      age: patient['age'] as int?,
+      gender: patient['gender'] as String?,
+      allergies: allergiesJson
+          .map((e) => _AllergyEntry.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      triagedAt: triage != null && triage['triaged_at'] != null
+          ? DateTime.tryParse(triage['triaged_at'] as String)
+          : null,
+    );
+  }
+}
+
+class _AllergyEntry {
+  final String allergen;
+  final String? reaction;
+  final String? severity;
+
+  const _AllergyEntry({required this.allergen, this.reaction, this.severity});
+
+  factory _AllergyEntry.fromJson(Map<String, dynamic> json) {
+    return _AllergyEntry(
+      allergen: json['allergen'] as String? ?? 'Unknown allergen',
+      reaction: json['reaction'] as String?,
+      severity: json['severity'] as String?,
+    );
+  }
+}
+
+/// Turns a timestamp into the "Last updated X mins ago" style label the
+/// screen previously hardcoded.
+String _timeAgoLabel(DateTime? when) {
+  if (when == null) return 'No triage recorded yet';
+  final diff = DateTime.now().toUtc().difference(when.toUtc());
+  if (diff.inMinutes < 1) return 'Last updated just now';
+  if (diff.inMinutes < 60) {
+    return 'Last updated ${diff.inMinutes} mins ago';
+  }
+  if (diff.inHours < 24) {
+    return 'Last updated ${diff.inHours} hr${diff.inHours == 1 ? '' : 's'} ago';
+  }
+  return 'Last updated ${diff.inDays} day${diff.inDays == 1 ? '' : 's'} ago';
+}
+
+/// Builds two-letter initials for the avatar chip, e.g. "Jane Doe" -> "JD".
+String _initialsFor(String fullName) {
+  final parts = fullName.trim().split(RegExp(r'\s+')).where((p) => p.isNotEmpty);
+  if (parts.isEmpty) return '?';
+  if (parts.length == 1) return parts.first.substring(0, 1).toUpperCase();
+  return (parts.first.substring(0, 1) + parts.last.substring(0, 1)).toUpperCase();
+}
+
+class PatientBriefScreen extends StatefulWidget {
+  const PatientBriefScreen({
+    super.key,
+    this.patientId,
+    this.sessionToken,
+    this.apiBaseUrl = _defaultApiBaseUrl,
+    this.onStartConsultation,
+    this.onViewPatientHistory,
+  });
+
+  /// public.patients.id (uuid) for the patient this brief is for. Left
+  /// nullable so existing call sites (e.g. a bottom-nav tab built before
+  /// a patient is selected) still compile — when null, the screen shows
+  /// a "no patient selected" state instead of fetching. Pass a real id
+  /// once the caller knows which patient to show.
+  final String? patientId;
+
+  /// Not currently sent anywhere — patients_data_fetch.js has no auth
+  /// check yet (see that file's header). Kept here so wiring a real
+  /// session token back in later is a one-line change in
+  /// _fetchPatientData rather than a constructor change.
+  final String? sessionToken;
+
+  /// TODO: replace with your deployed Vercel URL (or read it from a
+  /// shared config/env file if the app already has one).
+  static const String _defaultApiBaseUrl = 'https://YOUR-DEPLOYMENT.vercel.app';
+  final String apiBaseUrl;
+
+  final VoidCallback? onStartConsultation;
+  final VoidCallback? onViewPatientHistory;
+
+  @override
+  State<PatientBriefScreen> createState() => _PatientBriefScreenState();
+}
+
+class _PatientBriefScreenState extends State<PatientBriefScreen> {
+  Future<_PatientBriefData>? _dataFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.patientId != null) {
+      _dataFuture = _fetchPatientData();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant PatientBriefScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // If the caller re-pushes/rebuilds this screen with a different (or
+    // newly-available) patient, kick off a fresh fetch for it.
+    if (widget.patientId != oldWidget.patientId) {
+      setState(() {
+        _dataFuture = widget.patientId != null ? _fetchPatientData() : null;
+      });
+    }
+  }
+
+  Future<_PatientBriefData> _fetchPatientData() async {
+    final uri = Uri.parse('${widget.apiBaseUrl}/api/patients_data_fetch').replace(
+      queryParameters: {
+        'patient_id': widget.patientId!,
+      },
+    );
+
+    final response = await http.get(uri);
+
+    if (response.statusCode != 200) {
+      final body = _tryDecode(response.body);
+      final message = body?['error'] as String? ?? 'Failed to load patient data';
+      throw Exception(message);
+    }
+
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    return _PatientBriefData.fromJson(decoded);
+  }
+
+  Map<String, dynamic>? _tryDecode(String body) {
+    try {
+      return jsonDecode(body) as Map<String, dynamic>;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _retry() {
+    if (widget.patientId == null) return;
+    setState(() {
+      _dataFuture = _fetchPatientData();
+    });
+  }
+
+  // Vitals aren't in the current schema (no vitals table), so these stay
+  // static placeholders until a table/column exists to fetch them from.
   List<_VitalStat> get _vitals => const [
         _VitalStat(
           label: 'Heart Rate',
@@ -116,53 +261,194 @@ class PatientBriefScreen extends StatelessWidget {
     return Scaffold(
       backgroundColor: _PatientColors.background,
       body: SafeArea(
-        child: Column(
-          children: [
-            _buildTopBar(),
-            Expanded(
-              child: ListView(
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+        child: _dataFuture == null
+            ? _buildNoPatientSelected()
+            : FutureBuilder<_PatientBriefData>(
+                future: _dataFuture,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState != ConnectionState.done) {
+                    return _buildLoading();
+                  }
+                  if (snapshot.hasError) {
+                    return _buildError(snapshot.error.toString());
+                  }
+                  return _buildLoaded(snapshot.data!);
+                },
+              ),
+      ),
+    );
+  }
+
+  Widget _buildNoPatientSelected() {
+    return Column(
+      children: [
+        _buildTopBar(),
+        const Expanded(
+          child: Center(
+            child: Padding(
+              padding: EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  _buildPatientCard(),
-                  const SizedBox(height: 16),
-                  _buildAllergyBanner(),
-                  const SizedBox(height: 28),
-                  const Text(
-                    'Triage Information',
+                  Icon(
+                    Icons.person_search_rounded,
+                    size: 36,
+                    color: _PatientColors.subtitle,
+                  ),
+                  SizedBox(height: 12),
+                  Text(
+                    'No patient selected',
                     style: TextStyle(
-                      fontSize: 20,
+                      fontSize: 16,
                       fontWeight: FontWeight.w700,
                       color: _PatientColors.heading,
                     ),
                   ),
-                  const SizedBox(height: 14),
-                  _buildVitalsGrid(),
-                  const SizedBox(height: 16),
-                  Row(
-                    children: [
-                      const Icon(
-                        Icons.history_rounded,
-                        size: 16,
-                        color: _PatientColors.subtitle,
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        lastUpdatedLabel,
-                        style: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w500,
-                          color: _PatientColors.subtitle,
-                        ),
-                      ),
-                    ],
+                  SizedBox(height: 6),
+                  Text(
+                    'Select a patient from the queue to view their brief.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 13.5,
+                      color: _PatientColors.subtitle,
+                    ),
                   ),
                 ],
               ),
             ),
-            _buildStartConsultationButton(),
-          ],
+          ),
         ),
-      ),
+      ],
+    );
+  }
+
+  Widget _buildLoading() {
+    return Column(
+      children: [
+        _buildTopBar(),
+        const Expanded(
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(color: _PatientColors.navy),
+                SizedBox(height: 16),
+                Text(
+                  'Loading patient data',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w500,
+                    color: _PatientColors.subtitle,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildError(String message) {
+    return Column(
+      children: [
+        _buildTopBar(),
+        Expanded(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.error_outline_rounded,
+                    size: 36,
+                    color: _PatientColors.allergyFg,
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Couldn\'t load patient data',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: _PatientColors.heading,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    message,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 13.5,
+                      color: _PatientColors.subtitle,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  ElevatedButton(
+                    onPressed: _retry,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _PatientColors.navy,
+                      foregroundColor: Colors.white,
+                    ),
+                    child: const Text('Try again'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLoaded(_PatientBriefData data) {
+    return Column(
+      children: [
+        _buildTopBar(),
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+            children: [
+              _buildPatientCard(data),
+              if (data.allergies.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                _buildAllergyBanner(data.allergies),
+              ],
+              const SizedBox(height: 28),
+              const Text(
+                'Triage Information',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                  color: _PatientColors.heading,
+                ),
+              ),
+              const SizedBox(height: 14),
+              _buildVitalsGrid(),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  const Icon(
+                    Icons.history_rounded,
+                    size: 16,
+                    color: _PatientColors.subtitle,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    _timeAgoLabel(data.triagedAt),
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: _PatientColors.subtitle,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        _buildStartConsultationButton(),
+      ],
     );
   }
 
@@ -184,7 +470,18 @@ class PatientBriefScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildPatientCard() {
+  Widget _buildPatientCard(_PatientBriefData data) {
+    // NOTE: no `mrn` column exists in public.patients, so the patient's
+    // id is used in its place below — swap this out if you add one.
+    final id = widget.patientId ?? '';
+    final mrnLabel = id.length >= 8
+        ? id.substring(0, 8).toUpperCase()
+        : id.toUpperCase();
+    final ageGenderParts = [
+      if (data.age != null) '${data.age} Y',
+      if (data.gender != null && data.gender!.isNotEmpty) data.gender!,
+    ];
+
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
@@ -223,7 +520,7 @@ class PatientBriefScreen extends StatelessWidget {
                             shape: BoxShape.circle,
                           ),
                           child: Text(
-                            patientLabel,
+                            _initialsFor(data.fullName),
                             style: const TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.w700,
@@ -237,7 +534,7 @@ class PatientBriefScreen extends StatelessWidget {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                patientName,
+                                data.fullName,
                                 style: const TextStyle(
                                   fontSize: 20,
                                   fontWeight: FontWeight.w700,
@@ -246,7 +543,10 @@ class PatientBriefScreen extends StatelessWidget {
                               ),
                               const SizedBox(height: 4),
                               Text(
-                                'MRN: $mrn  •  $age Y  •  $gender',
+                                [
+                                  'MRN: $mrnLabel',
+                                  ...ageGenderParts,
+                                ].join('  •  '),
                                 style: const TextStyle(
                                   fontSize: 14,
                                   fontWeight: FontWeight.w500,
@@ -263,8 +563,7 @@ class PatientBriefScreen extends StatelessWidget {
                       spacing: 10,
                       runSpacing: 8,
                       children: [
-                        _buildWaitChip(),
-                        _buildTriageChip(),
+                        _buildPatientHistoryButton(),
                       ],
                     ),
                   ],
@@ -277,66 +576,52 @@ class PatientBriefScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildWaitChip() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-      decoration: BoxDecoration(
-        color: _PatientColors.waitChipBg,
+  Widget _buildPatientHistoryButton() {
+    return Material(
+      color: _PatientColors.waitChipBg,
+      borderRadius: BorderRadius.circular(20),
+      child: InkWell(
+        onTap: widget.onViewPatientHistory,
         borderRadius: BorderRadius.circular(20),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Icon(
-            Icons.access_time_rounded,
-            size: 16,
-            color: _PatientColors.waitChipFg,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.history_rounded,
+                size: 16,
+                color: _PatientColors.waitChipFg,
+              ),
+              const SizedBox(width: 6),
+              const Text(
+                'Patient History',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: _PatientColors.waitChipFg,
+                ),
+              ),
+              const SizedBox(width: 4),
+              const Icon(
+                Icons.arrow_forward_rounded,
+                size: 14,
+                color: _PatientColors.waitChipFg,
+              ),
+            ],
           ),
-          const SizedBox(width: 6),
-          Text(
-            waitLabel,
-            style: const TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              color: _PatientColors.waitChipFg,
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
 
-  Widget _buildTriageChip() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-      decoration: BoxDecoration(
-        color: _PatientColors.urgentChipBg,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: _PatientColors.urgentChipBorder),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Icon(
-            Icons.error_rounded,
-            size: 16,
-            color: _PatientColors.urgentChipFg,
-          ),
-          const SizedBox(width: 6),
-          Text(
-            triageLevel,
-            style: const TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              color: _PatientColors.urgentChipFg,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget _buildAllergyBanner(List<_AllergyEntry> allergies) {
+    final primary = allergies.first;
+    final extraCount = allergies.length - 1;
+    final detail = primary.reaction?.isNotEmpty == true
+        ? primary.reaction!
+        : 'No reaction details on file. Verify all medications prior to administration.';
 
-  Widget _buildAllergyBanner() {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -365,9 +650,11 @@ class PatientBriefScreen extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  'Severe Allergy',
-                  style: TextStyle(
+                Text(
+                  primary.severity?.isNotEmpty == true
+                      ? '${primary.severity} Allergy'
+                      : 'Allergy',
+                  style: const TextStyle(
                     fontSize: 17,
                     fontWeight: FontWeight.w700,
                     color: _PatientColors.allergyFg,
@@ -378,10 +665,10 @@ class PatientBriefScreen extends StatelessWidget {
                   TextSpan(
                     children: [
                       TextSpan(
-                        text: '$allergyName — ',
+                        text: '${primary.allergen} — ',
                         style: const TextStyle(fontWeight: FontWeight.w700),
                       ),
-                      TextSpan(text: allergyDetail),
+                      TextSpan(text: detail),
                     ],
                   ),
                   style: const TextStyle(
@@ -390,6 +677,17 @@ class PatientBriefScreen extends StatelessWidget {
                     color: _PatientColors.allergyFg,
                   ),
                 ),
+                if (extraCount > 0) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    '+$extraCount more allerg${extraCount == 1 ? 'y' : 'ies'} on file',
+                    style: const TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600,
+                      color: _PatientColors.allergyFg,
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
@@ -484,7 +782,7 @@ class PatientBriefScreen extends StatelessWidget {
           width: double.infinity,
           height: 56,
           child: ElevatedButton(
-            onPressed: onStartConsultation,
+            onPressed: widget.onStartConsultation,
             style: ElevatedButton.styleFrom(
               backgroundColor: _PatientColors.navy,
               foregroundColor: Colors.white,
