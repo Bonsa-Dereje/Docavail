@@ -1,6 +1,8 @@
 import 'dart:convert';
+import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
 import 'selected_patient.dart';
@@ -106,6 +108,61 @@ class _AllergyEntry {
   }
 }
 
+/// One entry from GET /api/patient_assign's `my_assignments` array, pared
+/// down to just what the end-of-consultation "next patient" modal shows.
+/// Deliberately separate from queue.dart's own `_QueuePatient` (that class
+/// is private to that file) rather than sharing it.
+class _NextPatientPreview {
+  final String patientId;
+  final String assignmentId;
+  final String name;
+  final String ageGender;
+  final String waitLabel;
+  final String chiefComplaint;
+
+  const _NextPatientPreview({
+    required this.patientId,
+    required this.assignmentId,
+    required this.name,
+    required this.ageGender,
+    required this.waitLabel,
+    required this.chiefComplaint,
+  });
+
+  factory _NextPatientPreview.fromAssignment(Map<String, dynamic> json) {
+    final age = json['age'] as int?;
+    final gender = json['gender'] as String?;
+    final chiefComplaint = json['chief_complaint'] as String?;
+    final assignedAt = json['assigned_at'] != null
+        ? DateTime.tryParse(json['assigned_at'] as String)
+        : null;
+
+    return _NextPatientPreview(
+      patientId: json['patient_id'] as String,
+      assignmentId: json['assignment_id'] as String,
+      name: json['full_name'] as String? ?? 'Unknown Patient',
+      ageGender: [
+        if (age != null) '$age y/o',
+        if (gender != null && gender.isNotEmpty) gender,
+      ].join(' • '),
+      waitLabel: _waitLabelFor(assignedAt),
+      chiefComplaint: chiefComplaint?.isNotEmpty == true
+          ? chiefComplaint!
+          : 'No chief complaint recorded.',
+    );
+  }
+
+  static String _waitLabelFor(DateTime? assignedAt) {
+    if (assignedAt == null) return 'Wait unknown';
+    final minutes =
+        DateTime.now().toUtc().difference(assignedAt.toUtc()).inMinutes;
+    if (minutes < 1) return 'Just checked in';
+    if (minutes < 60) return '${minutes}m wait';
+    final hours = minutes ~/ 60;
+    return '${hours}h ${minutes % 60}m wait';
+  }
+}
+
 /// Turns a timestamp into the "Last updated X mins ago" style label the
 /// screen previously hardcoded.
 String _timeAgoLabel(DateTime? when) {
@@ -172,6 +229,11 @@ class PatientBriefScreen extends StatefulWidget {
 }
 
 class _PatientBriefScreenState extends State<PatientBriefScreen> {
+  /// Same secure-storage key queue.dart and profile.dart use — lets this
+  /// screen resolve the signed-in doctor's token itself when it needs to
+  /// ask GET /api/patient_assign who's next in the queue.
+  static const _storage = FlutterSecureStorage();
+
   Future<_PatientBriefData>? _dataFuture;
   late bool _consultationActive = widget.autoStartConsultation;
 
@@ -231,14 +293,102 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
   }
 
   void _toggleConsultation() {
+    final wasActive = _consultationActive;
     setState(() => _consultationActive = !_consultationActive);
     if (_consultationActive) {
       widget.onStartConsultation?.call();
+      return;
     }
-    // TODO: if ending here should also update the queue's button back to
-    // "Start Consult", that needs to flow back up through a callback
-    // (e.g. widget.onEndConsultation) since queue.dart's button state
-    // lives on the queue screen, not here.
+    // TODO: ending here should also update the queue's button back to
+    // "Start Consult" server-side; that needs its own callback (e.g.
+    // widget.onEndConsultation) since queue.dart's button state lives on
+    // the queue screen, not here.
+    if (wasActive) {
+      _promptNextPatient();
+    }
+  }
+
+  /// Resolves the signed-in doctor's session token: an explicit
+  /// [PatientBriefScreen.sessionToken] wins, otherwise the token login
+  /// saved to secure storage (same key queue.dart and profile.dart use).
+  Future<String?> _resolveToken() async {
+    final explicit = widget.sessionToken;
+    if (explicit != null && explicit.isNotEmpty) return explicit;
+    return _storage.read(key: 'session_token');
+  }
+
+  /// Looks up this doctor's queue and returns the first waiting (not
+  /// currently in consultation) assignment other than [excludePatientId],
+  /// or null if there isn't one or the lookup fails.
+  Future<_NextPatientPreview?> _fetchNextWaitingPatient(
+    String excludePatientId,
+  ) async {
+    final token = await _resolveToken();
+    if (token == null || token.isEmpty) return null;
+
+    final uri = Uri.parse('${widget.apiBaseUrl}/api/patient_assign').replace(
+      queryParameters: {'token': token},
+    );
+
+    try {
+      final response = await http.get(uri).timeout(const Duration(seconds: 10));
+      if (response.statusCode != 200) return null;
+
+      final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+      final mine = (decoded['my_assignments'] as List<dynamic>?) ?? const [];
+
+      for (final entry in mine) {
+        final json = entry as Map<String, dynamic>;
+        if (json['in_consultation'] == true) continue;
+        final patientId = json['patient_id'] as String?;
+        if (patientId == null || patientId == excludePatientId) continue;
+        return _NextPatientPreview.fromAssignment(json);
+      }
+    } catch (_) {
+      // Silent — no next-patient prompt is better than crashing the
+      // "end consultation" action over a flaky network call.
+    }
+    return null;
+  }
+
+  /// Shows the blurred "who's next" modal immediately — before the network
+  /// call even starts — with a loading state, then swaps in the patient
+  /// card (or an empty state) once GET /api/patient_assign resolves. The
+  /// showDialog call isn't awaited on the fetch, so the modal appears the
+  /// instant "End Consultation" is tapped instead of the doctor staring at
+  /// nothing while it loads.
+  Future<void> _promptNextPatient() async {
+    final currentId = _effectivePatientId();
+    if (currentId == null) return;
+
+    final future = _fetchNextWaitingPatient(currentId);
+
+    await showDialog<void>(
+      context: context,
+      barrierColor: Colors.transparent,
+      builder: (dialogContext) {
+        return BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+          child: Container(
+            color: Colors.black.withValues(alpha: 0.25),
+            alignment: Alignment.center,
+            child: _NextPatientModal(
+              future: future,
+              onOpenDetails: _openPatientDetails,
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// Switches this screen over to [patientId] — same globally-selected-
+  /// patient mechanism the queue screen uses, so it opens right here
+  /// instead of navigating anywhere. Just opens the brief; doesn't touch
+  /// consultation state.
+  void _openPatientDetails(String patientId) {
+    SelectedPatient.select(patientId, autoStartConsultation: false);
+    setState(_syncFromSource);
   }
 
   Future<_PatientBriefData> _fetchPatientData(String patientId) async {
@@ -871,6 +1021,327 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
                 ),
               ],
             ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Wraps the "who's next" fetch and swaps between a loading card, an empty
+/// state (nobody else waiting), and the loaded [_NextPatientCard] as
+/// [future] resolves — all inside the same blurred backdrop so nothing
+/// pops in or out of the dialog itself.
+class _NextPatientModal extends StatelessWidget {
+  const _NextPatientModal({
+    required this.future,
+    required this.onOpenDetails,
+  });
+
+  final Future<_NextPatientPreview?> future;
+  final ValueChanged<String> onOpenDetails;
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<_NextPatientPreview?>(
+      future: future,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const _NextPatientLoadingCard();
+        }
+        final next = snapshot.data;
+        if (next == null) {
+          return _NextPatientEmptyCard(
+            onClose: () => Navigator.of(context).pop(),
+          );
+        }
+        return _NextPatientCard(
+          patient: next,
+          onOpenDetails: () {
+            Navigator.of(context).pop();
+            onOpenDetails(next.patientId);
+          },
+        );
+      },
+    );
+  }
+}
+
+/// Shown the instant "End Consultation" is tapped, while GET
+/// /api/patient_assign is still in flight.
+class _NextPatientLoadingCard extends StatelessWidget {
+  const _NextPatientLoadingCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 32),
+      child: Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        clipBehavior: Clip.antiAlias,
+        child: const Padding(
+          padding: EdgeInsets.symmetric(vertical: 32, horizontal: 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(color: _PatientColors.navy),
+              SizedBox(height: 16),
+              Text(
+                'Loading next patient…',
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                  color: _PatientColors.heading,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Shown when the lookup succeeds but nobody else is waiting.
+class _NextPatientEmptyCard extends StatelessWidget {
+  const _NextPatientEmptyCard({required this.onClose});
+
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 32),
+      child: Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        clipBehavior: Clip.antiAlias,
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.inbox_rounded,
+                size: 32,
+                color: _PatientColors.subtitle,
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'No one else waiting',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: _PatientColors.heading,
+                ),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Your queue is clear for now.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 13.5, color: _PatientColors.subtitle),
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                height: 44,
+                child: ElevatedButton(
+                  onPressed: onClose,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _PatientColors.navy,
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  child: const Text(
+                    'Close',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The "who's next" card shown once the lookup finishes and someone is
+/// waiting: name, wait time, chief complaint, and a single "Open Details"
+/// action that opens that patient right here on the Patients screen.
+class _NextPatientCard extends StatelessWidget {
+  const _NextPatientCard({
+    required this.patient,
+    required this.onOpenDetails,
+  });
+
+  final _NextPatientPreview patient;
+  final VoidCallback onOpenDetails;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 32),
+      child: Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        clipBehavior: Clip.antiAlias,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'UP NEXT IN QUEUE',
+                style: TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.4,
+                  color: _PatientColors.subtitle,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: 44,
+                    height: 44,
+                    alignment: Alignment.center,
+                    decoration: const BoxDecoration(
+                      color: _PatientColors.navy,
+                      shape: BoxShape.circle,
+                    ),
+                    child: Text(
+                      _initialsFor(patient.name),
+                      style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          patient.name,
+                          style: const TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w700,
+                            color: _PatientColors.heading,
+                          ),
+                        ),
+                        if (patient.ageGender.isNotEmpty) ...[
+                          const SizedBox(height: 2),
+                          Text(
+                            patient.ageGender,
+                            style: const TextStyle(
+                              fontSize: 13.5,
+                              fontWeight: FontWeight.w500,
+                              color: _PatientColors.subtitle,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: _PatientColors.waitChipBg,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.access_time_rounded,
+                          size: 13,
+                          color: _PatientColors.waitChipFg,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          patient.waitLabel,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: _PatientColors.waitChipFg,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: _PatientColors.background,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'CHIEF COMPLAINT',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.4,
+                        color: _PatientColors.subtitle,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      patient.chiefComplaint,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        height: 1.3,
+                        color: _PatientColors.heading,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                height: 44,
+                child: ElevatedButton(
+                  onPressed: onOpenDetails,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _PatientColors.navy,
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  child: const Text(
+                    'Open Details',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ),
