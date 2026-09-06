@@ -63,7 +63,10 @@ class NotificationService {
   Future<void> initialize() async {
     if (_initialized) return;
     const settings = InitializationSettings(
-      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      // The launcher PNG is a full-color square — wrong for the status-bar
+      // glyph Android places next to the app name. ic_notification is a
+      // white-on-transparent medical cross that the system tints properly.
+      android: AndroidInitializationSettings('@drawable/ic_notification'),
       iOS: DarwinInitializationSettings(
         requestAlertPermission: true,
         requestBadgePermission: true,
@@ -136,13 +139,16 @@ class NotificationService {
         title: 'New Patient',
         body: 'Case: ${notification.complaint}',
         notificationDetails: const NotificationDetails(
-          android: AndroidNotificationDetails(
-            _channelId,
-            _channelName,
-            channelDescription: _channelDescription,
-            importance: Importance.high,
-            priority: Priority.high,
-          ),
+android: AndroidNotificationDetails(
+          _channelId,
+          _channelName,
+          channelDescription: _channelDescription,
+          importance: Importance.high,
+          priority: Priority.high,
+          // Shows the actual Docavail logo alongside the app name at the
+          // top of the notification card, like other apps' headers.
+          largeIcon: DrawableResourceAndroidBitmap('@mipmap/ic_launcher'),
+        ),
           iOS: DarwinNotificationDetails(),
         ),
         payload: jsonEncode({
