@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
+import '../services/consultation_state.dart';
 import 'app_shell.dart';
 import 'patients.dart';
 import 'selected_patient.dart';
@@ -213,8 +214,17 @@ class _QueueScreenState extends State<QueueScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // Rebuild whenever consultation state changes on any screen (e.g. a
+    // doctor starts/ends a session on the Patients tab) so this screen's
+    // cards reflect it immediately instead of waiting for the next poll.
+    ConsultationState.instance.addListener(_onConsultationChanged);
     _loadQueue();
     _startPolling();
+  }
+
+  void _onConsultationChanged() {
+    if (!mounted) return;
+    setState(() {});
   }
 
   @override
@@ -231,6 +241,7 @@ class _QueueScreenState extends State<QueueScreen>
   @override
   void dispose() {
     _stopPolling();
+    ConsultationState.instance.removeListener(_onConsultationChanged);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -260,6 +271,16 @@ class _QueueScreenState extends State<QueueScreen>
     _pollTimer = null;
   }
 
+  /// Publishes the freshly-fetched queue to the shared [ConsultationState]
+  /// so the Patients screen (and anything else listening) sees the same
+  /// in-consultation truth as this queue without its own server round-trip.
+  void _publishConsultation(_QueueLoadResult result) {
+    ConsultationState.instance.publish({
+      for (final p in result.patients)
+        p.assignmentId: p.inConsultation,
+    });
+  }
+
   /// Background re-check of this doctor's assignment (run by the poll
   /// timer) so an assignment made on the desktop admin tool shows up here
   /// automatically. Only swaps the result on success — a transient network
@@ -273,6 +294,7 @@ class _QueueScreenState extends State<QueueScreen>
     try {
       final result = await _fetchQueue();
       if (!mounted) return;
+      _publishConsultation(result);
       setState(() {
         _queueResult = result;
         _errorMessage = null;
@@ -296,6 +318,7 @@ class _QueueScreenState extends State<QueueScreen>
     try {
       final result = await _fetchQueue();
       if (!mounted) return;
+      _publishConsultation(result);
       setState(() {
         _queueResult = result;
         _loading = false;
@@ -454,6 +477,7 @@ class _QueueScreenState extends State<QueueScreen>
     final token = await _resolveToken();
     if (token == null || token.isEmpty) return;
     setState(() => _startingConsultationIds.add(patient.assignmentId));
+    ConsultationState.instance.markActive(patient.assignmentId);
     _openPatientBrief(patient, autoStartConsultation: true);
 
     try {
@@ -528,7 +552,7 @@ class _QueueScreenState extends State<QueueScreen>
   /// other card shows "Start Consult" (moves it into the single
   /// consultation slot, demoting whatever was there).
   void _handleConsultButtonTap(_QueuePatient patient) {
-    if (patient.inConsultation) {
+    if (ConsultationState.instance.isInConsultation(patient.assignmentId)) {
       _completeAssignment(patient.assignmentId);
       return;
     }
@@ -868,7 +892,8 @@ class _QueueScreenState extends State<QueueScreen>
     // The card currently in consultation shows the red "End Session"
     // button; every other (waiting) card shows "Start Consult", which
     // moves it into that single consultation slot server-side.
-    final bool inConsultation = patient.inConsultation;
+    final bool inConsultation =
+        ConsultationState.instance.isInConsultation(patient.assignmentId);
     final bool starting = _startingConsultationIds.contains(patient.assignmentId);
     final bool completing = _completingConsultationIds.contains(patient.assignmentId);
 

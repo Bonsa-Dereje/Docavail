@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
+import '../services/consultation_state.dart';
 import 'selected_patient.dart';
 
 /// Brand + status colors used across the Patient Brief screen.
@@ -246,12 +247,16 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
   static const _storage = FlutterSecureStorage();
 
   Future<_PatientBriefData>? _dataFuture;
-  late bool _consultationActive = widget.autoStartConsultation;
 
   /// True while the start_consult/complete POST below is in flight — the
   /// button shows "Starting…"/"Ending…" and ignores taps meanwhile, same
   /// pattern as queue.dart's _startingConsultationIds/_completingConsultationIds.
   bool _consultationActionInFlight = false;
+
+  /// Local-only fallback for the (degenerate) case where this screen has no
+  /// assignment_id to tell the server about — see [_toggleConsultation].
+  /// Normally the shared [ConsultationState] is the single source of truth.
+  bool _fallbackConsultationActive = false;
 
   /// Concrete patient id this screen last fetched for. Lets
   /// [_effectivePatientId] tell a "still the same patient" rebuild apart
@@ -262,6 +267,10 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
   @override
   void initState() {
     super.initState();
+    // Rebuild when the queue's server poll publishes consultation state —
+    // a session started or ended on the Queue screen shows up here without
+    // a manual refetch.
+    ConsultationState.instance.addListener(_onConsultationChanged);
     _syncFromSource();
     if (widget.autoStartConsultation) {
       // Fire the callback once the first frame is up, same as if the
@@ -270,6 +279,11 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
         if (mounted) widget.onStartConsultation?.call();
       });
     }
+  }
+
+  void _onConsultationChanged() {
+    if (!mounted) return;
+    setState(() {});
   }
 
   @override
@@ -298,6 +312,12 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
   String? _effectiveAssignmentId() =>
       widget.assignmentId ?? SelectedPatient.assignmentId;
 
+  @override
+  void dispose() {
+    ConsultationState.instance.removeListener(_onConsultationChanged);
+    super.dispose();
+  }
+
   /// Re-reads the source of truth ([_effectivePatientId]) and, when it
   /// points at a patient this screen hasn't loaded yet, fetches it and
   /// syncs the consultation button's start state.
@@ -311,16 +331,25 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
     if (id == _loadedPatientId) return;
     _loadedPatientId = id;
     _dataFuture = _fetchPatientData(id);
-    _consultationActive = widget.patientId != null
-        ? widget.autoStartConsultation
-        : SelectedPatient.autoStartConsultation;
+  }
+
+  /// Whether the consultation button should read as active for the current
+  /// patient. With an assignment id this is the shared [ConsultationState]
+  /// (fed by the queue's server poll, so both screens always agree); with
+  /// none it falls back to the local-only flag.
+  bool get _isConsultationActive {
+    final assignmentId = _effectiveAssignmentId();
+    if (assignmentId != null) {
+      return ConsultationState.instance.isInConsultation(assignmentId);
+    }
+    return _fallbackConsultationActive;
   }
 
   Future<void> _toggleConsultation() async {
     if (_consultationActionInFlight) return;
-    final targetActive = !_consultationActive;
-
     final assignmentId = _effectiveAssignmentId();
+    final targetActive = !_isConsultationActive;
+
     final token = await _resolveToken();
 
     if (assignmentId == null || token == null || token.isEmpty) {
@@ -333,8 +362,9 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
         'PatientBriefScreen: no assignmentId/token available, '
         'toggling consultation locally only — the queue will not update.',
       );
-      setState(() => _consultationActive = targetActive);
+      setState(() => _fallbackConsultationActive = targetActive);
       if (targetActive) {
+        ConsultationState.instance.markActive(assignmentId);
         widget.onStartConsultation?.call();
       } else {
         _promptNextPatient();
@@ -368,13 +398,14 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
       }
 
       if (!mounted) return;
-      setState(() => _consultationActive = targetActive);
-
       if (targetActive) {
+        // Mark active optimistically — the queue's poll will confirm it.
+        ConsultationState.instance.markActive(assignmentId);
         widget.onStartConsultation?.call();
       } else {
-        // Now that the server has actually marked this assignment
-        // 'completed' (dropping it off the queue), prompt for who's next.
+        // End success: flip the button immediately, then prompt who's next.
+        // The queue poll drops the completed assignment entirely.
+        ConsultationState.instance.markInactive(assignmentId);
         await _promptNextPatient();
       }
     } catch (err) {
@@ -464,9 +495,17 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
   /// Switches this screen over to [patientId] — same globally-selected-
   /// patient mechanism the queue screen uses, so it opens right here
   /// instead of navigating anywhere. Just opens the brief; doesn't touch
-  /// consultation state.
-  void _openPatientDetails(String patientId) {
-    SelectedPatient.select(patientId, autoStartConsultation: false);
+  /// consultation state. [assignmentId] (when known, e.g. from the next-
+  /// patient lookup) is forwarded to [SelectedPatient] so a consultation
+  /// started from this screen can actually drive the shared
+  /// [ConsultationState] — and therefore the matching card on the Queue
+  /// tab — instead of degrading to a local-only toggle.
+  void _openPatientDetails(String patientId, {String? assignmentId}) {
+    SelectedPatient.select(
+      patientId,
+      assignmentId: assignmentId,
+      autoStartConsultation: false,
+    );
     setState(_syncFromSource);
   }
 
@@ -1062,7 +1101,7 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
   }
 
   Widget _buildStartConsultationButton() {
-    final bool active = _consultationActive;
+    final bool active = _isConsultationActive;
     final bool busy = _consultationActionInFlight;
     final String label = busy
         ? (active ? 'Ending…' : 'Starting…')
@@ -1125,7 +1164,7 @@ class _NextPatientModal extends StatelessWidget {
   });
 
   final Future<_NextPatientPreview?> future;
-  final ValueChanged<String> onOpenDetails;
+  final void Function(String patientId, {String? assignmentId}) onOpenDetails;
 
   @override
   Widget build(BuildContext context) {
@@ -1145,7 +1184,7 @@ class _NextPatientModal extends StatelessWidget {
           patient: next,
           onOpenDetails: () {
             Navigator.of(context).pop();
-            onOpenDetails(next.patientId);
+            onOpenDetails(next.patientId, assignmentId: next.assignmentId);
           },
         );
       },
