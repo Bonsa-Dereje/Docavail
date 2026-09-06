@@ -49,7 +49,14 @@ enum _PatientTag { urgent, newPatient, followUp, routine }
 class _QueueLoadResult {
   final List<_QueuePatient> patients;
 
-  const _QueueLoadResult({required this.patients});
+  /// The signed-in doctor's own "on break" flag, from the same poll
+  /// response. Used to suppress new-patient notifications during breaks.
+  final bool onBreak;
+
+  const _QueueLoadResult({
+    required this.patients,
+    this.onBreak = false,
+  });
 }
 
 class _QueuePatient {
@@ -186,6 +193,13 @@ class _QueueScreenState extends State<QueueScreen>
   String? _errorMessage;
   _QueueLoadResult? _queueResult;
 
+  /// The signed-in doctor's own availability flags, read straight off the
+  /// GET /api/patient_assign poll (the backend includes them in the same
+  /// response). While [onBreak] is true, freshly-assigned patients appear
+  /// in the queue but DON'T raise a notification; the doctor opted out of
+  /// alerts for the duration of their break.
+  bool _onBreak = false;
+
   /// Guards against overlapping poll requests: if a fetch triggered by one
   /// tick of the 1s timer is still waiting on the network when the next
   /// tick fires, skip that tick rather than firing a second request whose
@@ -311,6 +325,7 @@ class _QueueScreenState extends State<QueueScreen>
       _publishConsultation(result);
       setState(() {
         _queueResult = result;
+        _onBreak = result.onBreak;
         _errorMessage = null;
       });
     } catch (_) {
@@ -336,6 +351,7 @@ class _QueueScreenState extends State<QueueScreen>
       _publishConsultation(result);
       setState(() {
         _queueResult = result;
+        _onBreak = result.onBreak;
         _loading = false;
       });
     } catch (err) {
@@ -384,6 +400,7 @@ class _QueueScreenState extends State<QueueScreen>
         (assignDecoded['my_assignments'] as List<dynamic>?) ?? const [];
 
     return _QueueLoadResult(
+      onBreak: assignDecoded['on_break'] == true,
       patients: mineList
           .map((e) => _QueuePatient.fromAssignment(e as Map<String, dynamic>))
           .toList(),
@@ -402,7 +419,11 @@ class _QueueScreenState extends State<QueueScreen>
   /// for and raises a "New Patient" notification for every assignment that
   /// just appeared. The first load only seeds the seen-set — a doctor who
   /// already has patients when the app opens shouldn't be notified about
-  /// the ones already on screen.
+  /// the ones already on screen. While the doctor is on break ([_onBreak])
+  /// new assignments still enter the queue but DON'T alert — the doctor
+  /// opted out of notifications for the break — though they're still
+  /// marked seen so returning from break doesn't fire a wall of stale
+  /// notifications for patients already visible.
   void _handleNewAssignments(_QueueLoadResult result) {
     final assignments = result.patients;
 
@@ -422,6 +443,14 @@ class _QueueScreenState extends State<QueueScreen>
     final newIds = currentIds.difference(_notifiedAssignmentIds);
     if (newIds.isEmpty) return;
     _notifiedAssignmentIds.addAll(newIds);
+
+    if (_onBreak) {
+      debugPrint(
+        'QueueScreen: ${newIds.length} new assignment(s) while on break '
+        '— silently adding to queue, not notifying',
+      );
+      return;
+    }
 
     for (final id in newIds) {
       final patient = assignments.firstWhere((p) => p.assignmentId == id);

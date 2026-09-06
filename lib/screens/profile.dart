@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -97,6 +98,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
   _AvailabilityMode _mode = _AvailabilityMode.hospital;
   String? _lastUpdated;
 
+  /// The number of extra patients the doctor consented to take while in
+  /// Leaving mode (their on-screen "how many more?" pick). Shown/revised
+  /// via the capacity modal; 0 means "no more patients".
+  int _extraPatientLimit = 0;
+
   bool _statusSyncing = false;
 
   bool _loggingOut = false;
@@ -192,10 +198,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   /// Pushes the current on-duty flag + mode to the backend. Callers apply
   /// the optimistic UI change first, then await this; on failure they
-  /// should revert to the previous values themselves.
+  /// should revert to the previous values themselves. [extraPatientLimit]
+  /// is only honored by the backend for the 'leaving' mode — it's ignored
+  /// (stored as 0) otherwise.
   Future<bool> _pushStatus({
     required bool onDuty,
     required _AvailabilityMode mode,
+    int extraPatientLimit = 0,
   }) async {
     setState(() => _statusSyncing = true);
 
@@ -214,6 +223,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           'token': token,
           'is_on_duty': onDuty,
           'mode': _modeApiValues[mode],
+          'extra_patient_limit': extraPatientLimit,
         }),
       );
 
@@ -314,28 +324,77 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> _selectMode(_AvailabilityMode mode) async {
     if (_statusSyncing) return;
-    // No-op if this mode is already active and the doctor is already on
-    // duty; otherwise, even re-tapping the current mode while off duty
-    // should flip duty back on.
-    if (mode == _mode && _onDuty) return;
+    // Re-tapping the currently active card is normally a no-op, except for
+    // Leaving — re-opening it lets the doctor revise how many more patients
+    // they'll take before heading off.
+    if (mode == _mode && _onDuty && mode != _AvailabilityMode.leaving) return;
+
+    // Picking Leaving first asks the doctor how many more patients they're
+    // still willing to take; that number becomes the hard cap the desktop
+    // admin may still assign. Cancelling keeps the previous mode.
+    int extraPatientLimit = 0;
+    if (mode == _AvailabilityMode.leaving) {
+      final picked = await _promptExtraPatientLimit();
+      if (picked == null) return;
+      extraPatientLimit = picked;
+    }
 
     final previousMode = _mode;
     final previousOnDuty = _onDuty;
+    final previousLimit = _extraPatientLimit;
 
     // Picking a work mode is only meaningful while on duty, so selecting
     // any of the four cards auto-enables the "On Duty" toggle too.
     setState(() {
       _mode = mode;
       _onDuty = true;
+      _extraPatientLimit = extraPatientLimit;
     });
 
-    final ok = await _pushStatus(onDuty: true, mode: mode);
+    final ok = await _pushStatus(
+      onDuty: true,
+      mode: mode,
+      extraPatientLimit: extraPatientLimit,
+    );
     if (!ok && mounted) {
       setState(() {
         _mode = previousMode;
         _onDuty = previousOnDuty;
+        _extraPatientLimit = previousLimit;
       });
     }
+  }
+
+  /// Blurred-background modal that asks "how many more patients would you
+  /// take?" with a big number stepper (+/- buttons). Returns the picked
+  /// count, or null if the doctor dismissed it.
+  Future<int?> _promptExtraPatientLimit() {
+    return showGeneralDialog<int>(
+      context: context,
+      barrierDismissible: false,
+      barrierLabel: 'Patient capacity',
+      transitionDuration: const Duration(milliseconds: 200),
+      pageBuilder: (context, animation, secondaryAnimation) {
+        // The BackdropFilter here lives in the dialog's own route, so it
+        // blurs everything painted beneath it — the whole app behind the
+        // modal goes soft while this card sits on top.
+        return Stack(
+          children: [
+            Positioned.fill(
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 6, sigmaY: 6),
+                child: Container(color: Colors.black.withValues(alpha: 0.45)),
+              ),
+            ),
+            Center(
+              child: _LeavingCapacityModal(
+                initialLimit: _extraPatientLimit > 0 ? _extraPatientLimit : 0,
+              ),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   /// Whether the profile is currently authoring its own mode (e.g. the
@@ -708,6 +767,195 @@ class _ProfileScreenState extends State<ProfileScreen> {
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The "how many more patients would you take?" card shown over a blurred
+/// background when a doctor picks Leaving. A single big number with a
+/// round plus/minus button beside each side, so the doctor can step the
+/// count up and down freely, plus confirm/cancel. The picked number is
+/// what the desktop admin is capped to — they can't stack more than this
+/// many extra patients onto a leaving doctor.
+class _LeavingCapacityModal extends StatefulWidget {
+  const _LeavingCapacityModal({this.initialLimit = 0});
+
+  final int initialLimit;
+
+  @override
+  State<_LeavingCapacityModal> createState() => _LeavingCapacityModalState();
+}
+
+class _LeavingCapacityModalState extends State<_LeavingCapacityModal> {
+  // A live draft of the count, reset each time the modal opens.
+  late int _draft = widget.initialLimit;
+
+  void _change(int delta) {
+    // Floor at 0 ("no more patients") and cap at a generous 99 so the
+    // number stays tappable/large; nobody realistically takes more than
+    // a few dozen extra.
+    setState(() {
+      _draft = (_draft + delta).clamp(0, 99);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 28),
+        padding: const EdgeInsets.fromLTRB(24, 22, 24, 18),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.2),
+              blurRadius: 30,
+              offset: const Offset(0, 12),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Leaving',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 1.2,
+                color: _ProfileColors.subtitle,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'How many more patients would you take?',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 17,
+                fontWeight: FontWeight.w700,
+                color: _ProfileColors.heading,
+              ),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'The desktop admin can\u2019t assign you more than this until you\u2019re back from your break.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 12.5,
+                height: 1.3,
+                color: _ProfileColors.subtitle,
+              ),
+            ),
+            const SizedBox(height: 22),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _RoundStepButton(
+                  icon: Icons.remove_rounded,
+                  onTap: _draft <= 0 ? null : () => _change(-1),
+                ),
+                SizedBox(
+                  width: 88,
+                  child: Text(
+                    '$_draft',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 64,
+                      height: 1.0,
+                      fontWeight: FontWeight.w800,
+                      color: _ProfileColors.navy,
+                    ),
+                  ),
+                ),
+                _RoundStepButton(
+                  icon: Icons.add_rounded,
+                  onTap: _draft >= 99 ? null : () => _change(1),
+                ),
+              ],
+            ),
+            const SizedBox(height: 22),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.of(context).pop(null),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: _ProfileColors.heading,
+                      side: const BorderSide(color: _ProfileColors.divider),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: const Text(
+                      'Cancel',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.of(context).pop(_draft),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _ProfileColors.navy,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: const Text(
+                      'Confirm',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A single large round +/- button for the capacity stepper. Disabled at
+/// the floor/ceiling by passing a null [onTap].
+class _RoundStepButton extends StatelessWidget {
+  const _RoundStepButton({required this.icon, this.onTap});
+
+  final IconData icon;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = onTap != null;
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 56,
+        height: 56,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: enabled ? _ProfileColors.navy : _ProfileColors.divider,
+        ),
+        child: Icon(
+          icon,
+          size: 32,
+          color: enabled ? Colors.white : _ProfileColors.subtitle,
         ),
       ),
     );
