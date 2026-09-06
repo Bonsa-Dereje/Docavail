@@ -31,6 +31,7 @@ class _PatientColors {
   static const temperatureFg = Color(0xFF8A6D1D);
   static const bloodPressureFg = _PatientColors.heading;
   static const spo2Fg = Color(0xFF0D2B9E);
+  static const inactiveFg = Color(0xFF9AA1B4);
 }
 
 class _VitalStat {
@@ -374,30 +375,9 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
 
     setState(() => _consultationActionInFlight = true);
     try {
-      final uri = Uri.parse('${widget.apiBaseUrl}/api/patient_assign');
-      final response = await http
-          .post(
-            uri,
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'action': targetActive ? 'start_consult' : 'complete',
-              'token': token,
-              'assignment_id': assignmentId,
-            }),
-          )
-          .timeout(const Duration(seconds: 10));
-
-      if (response.statusCode != 200) {
-        final body = _tryDecode(response.body);
-        throw Exception(
-          body?['error'] as String? ??
-              (targetActive
-                  ? 'Failed to start consultation'
-                  : 'Failed to end consultation'),
-        );
-      }
-
+      await _postConsultationAction(assignmentId, targetActive);
       if (!mounted) return;
+
       if (targetActive) {
         // Mark active optimistically — the queue's poll will confirm it.
         ConsultationState.instance.markActive(assignmentId);
@@ -408,6 +388,101 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
         ConsultationState.instance.markInactive(assignmentId);
         await _promptNextPatient();
       }
+    } catch (err) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$err')),
+      );
+    } finally {
+      if (mounted) setState(() => _consultationActionInFlight = false);
+    }
+  }
+
+  /// POSTs one start_consult/complete action to patient_assign.js. Throws
+  /// on a non-200 response so callers can surface the server error.
+  Future<void> _postConsultationAction(
+    String assignmentId,
+    bool start,
+  ) async {
+    final token = await _resolveToken();
+    if (token == null || token.isEmpty) {
+      throw Exception(
+        'Not signed in — can\'t update the consultation.',
+      );
+    }
+
+    final uri = Uri.parse('${widget.apiBaseUrl}/api/patient_assign');
+    final response = await http
+        .post(
+          uri,
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'action': start ? 'start_consult' : 'complete',
+            'token': token,
+            'assignment_id': assignmentId,
+          }),
+        )
+        .timeout(const Duration(seconds: 10));
+
+    if (response.statusCode != 200) {
+      final body = _tryDecode(response.body);
+      throw Exception(
+        body?['error'] as String? ??
+            (start
+                ? 'Failed to start consultation'
+                : 'Failed to end consultation'),
+      );
+    }
+  }
+
+  /// A different patient is mid-consultation and the doctor tapped this
+  /// screen's "Start Consultation": the slot can't hold two at once, so
+  /// confirm ending the current session first, then complete it and start
+  /// this patient's consultation.
+  Future<void> _promptEndSessionThenStartHere() async {
+    final currentName =
+        ConsultationState.instance.activePatientName ?? 'Another patient';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: Colors.white,
+        title: const Text('End current session?'),
+        content: Text(
+          '$currentName is currently in consultation. '
+          'End that session to start a consultation with this patient?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Keep session'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('End & Start'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    final assignmentId = _effectiveAssignmentId();
+    if (assignmentId == null) return;
+
+    final currentAssignmentId =
+        ConsultationState.instance.activeAssignmentId;
+    setState(() => _consultationActionInFlight = true);
+    try {
+      if (currentAssignmentId != null &&
+          currentAssignmentId != assignmentId) {
+        await _postConsultationAction(currentAssignmentId, false);
+        ConsultationState.instance.markInactive(currentAssignmentId);
+      }
+      if (!mounted) return;
+      await _postConsultationAction(assignmentId, true);
+      if (!mounted) return;
+      ConsultationState.instance.markActive(assignmentId);
+      widget.onStartConsultation?.call();
     } catch (err) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1102,10 +1177,18 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
 
   Widget _buildStartConsultationButton() {
     final bool active = _isConsultationActive;
+    // A different patient is mid-consultation and this one isn't: gray the
+    // button out (still tappable — the tap prompts to end the current
+    // session first) so the slot can't silently hold two consultations.
+    final bool anotherActive =
+        !active && ConsultationState.instance.hasActiveConsultation;
     final bool busy = _consultationActionInFlight;
     final String label = busy
         ? (active ? 'Ending…' : 'Starting…')
         : (active ? 'End Consultation' : 'Start Consultation');
+    final Color base = anotherActive
+        ? _PatientColors.inactiveFg
+        : (active ? _PatientColors.allergyIconBg : _PatientColors.navy);
     return SafeArea(
       top: false,
       child: Padding(
@@ -1114,13 +1197,14 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
           width: double.infinity,
           height: 56,
           child: ElevatedButton(
-            onPressed: busy ? null : _toggleConsultation,
+            onPressed: busy
+                ? null
+                : (anotherActive
+                    ? _promptEndSessionThenStartHere
+                    : _toggleConsultation),
             style: ElevatedButton.styleFrom(
-              backgroundColor:
-                  active ? _PatientColors.allergyIconBg : _PatientColors.navy,
-              disabledBackgroundColor:
-                  (active ? _PatientColors.allergyIconBg : _PatientColors.navy)
-                      .withValues(alpha: 0.6),
+              backgroundColor: base,
+              disabledBackgroundColor: base.withValues(alpha: 0.6),
               foregroundColor: Colors.white,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(14),

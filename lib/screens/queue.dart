@@ -302,10 +302,15 @@ class _QueueScreenState extends State<QueueScreen>
   /// so the Patients screen (and anything else listening) sees the same
   /// in-consultation truth as this queue without its own server round-trip.
   void _publishConsultation(_QueueLoadResult result) {
-    ConsultationState.instance.publish({
-      for (final p in result.patients)
-        p.assignmentId: p.inConsultation,
-    });
+    ConsultationState.instance.publish(
+      {
+        for (final p in result.patients)
+          p.assignmentId: p.inConsultation,
+      },
+      patientNames: {
+        for (final p in result.patients) p.assignmentId: p.name,
+      },
+    );
   }
 
   /// Background re-check of this doctor's assignment (run by the poll
@@ -563,7 +568,10 @@ class _QueueScreenState extends State<QueueScreen>
     final token = await _resolveToken();
     if (token == null || token.isEmpty) return;
     setState(() => _startingConsultationIds.add(patient.assignmentId));
-    ConsultationState.instance.markActive(patient.assignmentId);
+    ConsultationState.instance.markActive(
+      patient.assignmentId,
+      name: patient.name,
+    );
     _openPatientBrief(patient, autoStartConsultation: true);
 
     try {
@@ -636,13 +644,69 @@ class _QueueScreenState extends State<QueueScreen>
   /// Routed from each queue card's consultation button. The card that is
   /// currently in consultation shows "End Session" (completes it); every
   /// other card shows "Start Consult" (moves it into the single
-  /// consultation slot, demoting whatever was there).
+  /// consultation slot, demoting whatever was there). While another patient
+  /// is mid-consultation, a waiting card's "Start Consult" is grayed out
+  /// and its tap routes to the confirm-end-current-session prompt instead
+  /// of starting directly.
   void _handleConsultButtonTap(_QueuePatient patient) {
     if (ConsultationState.instance.isInConsultation(patient.assignmentId)) {
       _completeAssignment(patient.assignmentId);
       return;
     }
+    if (ConsultationState.instance.hasActiveConsultation) {
+      _promptStartWhileInSession(patient);
+      return;
+    }
     _startConsultation(patient);
+  }
+
+  /// Tapped a waiting card's "Start Consult" while another patient is
+  /// already mid-consultation: the single slot can't hold two at once, so
+  /// confirm ending the current session first. On confirmation, completes
+  /// the current assignment and then starts the tapped patient.
+  Future<void> _promptStartWhileInSession(_QueuePatient patient) async {
+    final currentName =
+        ConsultationState.instance.activePatientName ?? 'Another patient';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: Colors.white,
+        title: const Text('End current session?'),
+        content: Text(
+          '$currentName is currently in consultation. '
+          'End that session to start a consultation with ${patient.name}?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Keep session'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('End & Start'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    _QueuePatient? current;
+    final result = _queueResult;
+    if (result != null) {
+      for (final p in result.patients) {
+        if (p.inConsultation && p.assignmentId != patient.assignmentId) {
+          current = p;
+          break;
+        }
+      }
+    }
+
+    if (current != null) {
+      await _completeAssignment(current.assignmentId);
+      if (!mounted) return;
+    }
+    await _startConsultation(patient);
   }
 
   @override
@@ -982,6 +1046,11 @@ class _QueueScreenState extends State<QueueScreen>
         ConsultationState.instance.isInConsultation(patient.assignmentId);
     final bool starting = _startingConsultationIds.contains(patient.assignmentId);
     final bool completing = _completingConsultationIds.contains(patient.assignmentId);
+    // A waiting card while another patient is mid-consultation: gray the
+    // button out (still tappable — the tap prompts to end the current
+    // session first) so the doctor can't silently hold two consultations.
+    final bool anotherInSession =
+        !inConsultation && ConsultationState.instance.hasActiveConsultation;
 
     late final Color bg;
     late final String label;
@@ -995,6 +1064,10 @@ class _QueueScreenState extends State<QueueScreen>
       bg = _QueueColors.followUpBar; // green
       label = 'Starting…';
       enabled = false;
+    } else if (anotherInSession) {
+      bg = _QueueColors.dischargedBar; // gray
+      label = 'Start Consult';
+      enabled = true;
     } else {
       bg = _QueueColors.navy;
       label = 'Start Consult';
