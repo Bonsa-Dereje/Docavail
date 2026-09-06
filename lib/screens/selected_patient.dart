@@ -13,6 +13,12 @@ class SelectedPatient {
   /// any patient has been opened this session.
   static String? patientId;
 
+  /// public.patient_assignments.id backing the currently open patient,
+  /// or null when the patient was opened without going through the
+  /// queue (so there's no assignment to drive start_consult/complete
+  /// calls with). Set alongside [patientId] by [select].
+  static String? assignmentId;
+
   /// Mirrors [PatientBriefScreen.autoStartConsultation]: when a
   /// consultation was already kicked off on the queue card, the brief
   /// should open showing "End Consultation".
@@ -20,8 +26,13 @@ class SelectedPatient {
 
   /// Overwrites the currently open patient with [id]. The previous
   /// patient (if any) is lost — only one is ever held.
-  static void select(String id, {bool autoStartConsultation = false}) {
+  static void select(
+    String id, {
+    String? assignmentId,
+    bool autoStartConsultation = false,
+  }) {
     patientId = id;
+    SelectedPatient.assignmentId = assignmentId;
     SelectedPatient.autoStartConsultation = autoStartConsultation;
   }
 }

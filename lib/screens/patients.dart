@@ -190,6 +190,7 @@ class PatientBriefScreen extends StatefulWidget {
   const PatientBriefScreen({
     super.key,
     this.patientId,
+    this.assignmentId,
     this.sessionToken,
     this.apiBaseUrl = _defaultApiBaseUrl,
     this.onStartConsultation,
@@ -203,6 +204,16 @@ class PatientBriefScreen extends StatefulWidget {
   /// a "no patient selected" state instead of fetching. Pass a real id
   /// once the caller knows which patient to show.
   final String? patientId;
+
+  /// patient_assignments.id for [patientId] on this doctor's queue — the
+  /// same id queue.dart sends to patient_assign.js's start_consult/complete
+  /// actions. Needed so this screen's own Start/End Consultation button can
+  /// make that same call instead of only flipping local UI state. Left
+  /// nullable for call sites that predate this (e.g. a bare push without an
+  /// assignment on hand); when null the button falls back to local-only
+  /// behavior and a warning is logged, since there's nothing to tell the
+  /// server to update.
+  final String? assignmentId;
 
   /// Not currently sent anywhere — patients_data_fetch.js has no auth
   /// check yet (see that file's header). Kept here so wiring a real
@@ -236,6 +247,11 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
 
   Future<_PatientBriefData>? _dataFuture;
   late bool _consultationActive = widget.autoStartConsultation;
+
+  /// True while the start_consult/complete POST below is in flight — the
+  /// button shows "Starting…"/"Ending…" and ignores taps meanwhile, same
+  /// pattern as queue.dart's _startingConsultationIds/_completingConsultationIds.
+  bool _consultationActionInFlight = false;
 
   /// Concrete patient id this screen last fetched for. Lets
   /// [_effectivePatientId] tell a "still the same patient" rebuild apart
@@ -274,6 +290,14 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
   String? _effectivePatientId() =>
       widget.patientId ?? SelectedPatient.patientId;
 
+  /// Which patient_assignments.id backs the current patient: an explicit
+  /// [PatientBriefScreen.assignmentId] wins, otherwise whatever the queue
+  /// screen stashed globally when it opened this patient. Needed so the
+  /// Start/End Consultation button here can hit the same
+  /// start_consult/complete actions queue.dart's own buttons use.
+  String? _effectiveAssignmentId() =>
+      widget.assignmentId ?? SelectedPatient.assignmentId;
+
   /// Re-reads the source of truth ([_effectivePatientId]) and, when it
   /// points at a patient this screen hasn't loaded yet, fetches it and
   /// syncs the consultation button's start state.
@@ -292,19 +316,74 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
         : SelectedPatient.autoStartConsultation;
   }
 
-  void _toggleConsultation() {
-    final wasActive = _consultationActive;
-    setState(() => _consultationActive = !_consultationActive);
-    if (_consultationActive) {
-      widget.onStartConsultation?.call();
+  Future<void> _toggleConsultation() async {
+    if (_consultationActionInFlight) return;
+    final targetActive = !_consultationActive;
+
+    final assignmentId = _effectiveAssignmentId();
+    final token = await _resolveToken();
+
+    if (assignmentId == null || token == null || token.isEmpty) {
+      // Nothing to tell the server (e.g. this screen was opened without
+      // going through the queue). Fall back to the old local-only toggle
+      // so the button still works, but note that the queue screen won't
+      // reflect this — there's no assignment_id to call start_consult /
+      // complete with.
+      debugPrint(
+        'PatientBriefScreen: no assignmentId/token available, '
+        'toggling consultation locally only — the queue will not update.',
+      );
+      setState(() => _consultationActive = targetActive);
+      if (targetActive) {
+        widget.onStartConsultation?.call();
+      } else {
+        _promptNextPatient();
+      }
       return;
     }
-    // TODO: ending here should also update the queue's button back to
-    // "Start Consult" server-side; that needs its own callback (e.g.
-    // widget.onEndConsultation) since queue.dart's button state lives on
-    // the queue screen, not here.
-    if (wasActive) {
-      _promptNextPatient();
+
+    setState(() => _consultationActionInFlight = true);
+    try {
+      final uri = Uri.parse('${widget.apiBaseUrl}/api/patient_assign');
+      final response = await http
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'action': targetActive ? 'start_consult' : 'complete',
+              'token': token,
+              'assignment_id': assignmentId,
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
+
+      if (response.statusCode != 200) {
+        final body = _tryDecode(response.body);
+        throw Exception(
+          body?['error'] as String? ??
+              (targetActive
+                  ? 'Failed to start consultation'
+                  : 'Failed to end consultation'),
+        );
+      }
+
+      if (!mounted) return;
+      setState(() => _consultationActive = targetActive);
+
+      if (targetActive) {
+        widget.onStartConsultation?.call();
+      } else {
+        // Now that the server has actually marked this assignment
+        // 'completed' (dropping it off the queue), prompt for who's next.
+        await _promptNextPatient();
+      }
+    } catch (err) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$err')),
+      );
+    } finally {
+      if (mounted) setState(() => _consultationActionInFlight = false);
     }
   }
 
@@ -984,6 +1063,10 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
 
   Widget _buildStartConsultationButton() {
     final bool active = _consultationActive;
+    final bool busy = _consultationActionInFlight;
+    final String label = busy
+        ? (active ? 'Ending…' : 'Starting…')
+        : (active ? 'End Consultation' : 'Start Consultation');
     return SafeArea(
       top: false,
       child: Padding(
@@ -992,10 +1075,13 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
           width: double.infinity,
           height: 56,
           child: ElevatedButton(
-            onPressed: _toggleConsultation,
+            onPressed: busy ? null : _toggleConsultation,
             style: ElevatedButton.styleFrom(
               backgroundColor:
                   active ? _PatientColors.allergyIconBg : _PatientColors.navy,
+              disabledBackgroundColor:
+                  (active ? _PatientColors.allergyIconBg : _PatientColors.navy)
+                      .withValues(alpha: 0.6),
               foregroundColor: Colors.white,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(14),
@@ -1013,7 +1099,7 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
                 ),
                 const SizedBox(width: 10),
                 Text(
-                  active ? 'End Consultation' : 'Start Consultation',
+                  label,
                   style: const TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w700,

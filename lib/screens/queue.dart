@@ -498,6 +498,7 @@ class _QueueScreenState extends State<QueueScreen>
     // it via AppShell on the next rebuild.
     SelectedPatient.select(
       patient.id,
+      assignmentId: patient.assignmentId,
       autoStartConsultation: autoStartConsultation,
     );
 
@@ -513,6 +514,7 @@ class _QueueScreenState extends State<QueueScreen>
       MaterialPageRoute(
         builder: (_) => PatientBriefScreen(
           patientId: patient.id,
+          assignmentId: patient.assignmentId,
           sessionToken: widget.sessionToken,
           apiBaseUrl: widget.apiBaseUrl,
           autoStartConsultation: autoStartConsultation,
