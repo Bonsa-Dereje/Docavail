@@ -773,12 +773,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 }
 
-/// The "how many more patients would you take?" card shown over a blurred
-/// background when a doctor picks Leaving. A single big number with a
-/// round plus/minus button beside each side, so the doctor can step the
-/// count up and down freely, plus confirm/cancel. The picked number is
-/// what the desktop admin is capped to — they can't stack more than this
-/// many extra patients onto a leaving doctor.
+/// The "how many more patients would you like to take?" card shown over a
+/// blurred background when a doctor picks Leaving. A single big number
+/// with a round plus/minus button beside each side, so the doctor can
+/// step the count up and down freely, plus confirm/cancel. The picked
+/// number caps how many more patients may be assigned to them before they
+/// leave.
 class _LeavingCapacityModal extends StatefulWidget {
   const _LeavingCapacityModal({this.initialLimit = 0});
 
@@ -833,22 +833,12 @@ class _LeavingCapacityModalState extends State<_LeavingCapacityModal> {
             ),
             const SizedBox(height: 8),
             const Text(
-              'How many more patients would you take?',
+              'How many more patients would you like to take?',
               textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 17,
                 fontWeight: FontWeight.w700,
                 color: _ProfileColors.heading,
-              ),
-            ),
-            const SizedBox(height: 6),
-            const Text(
-              'The desktop admin can\u2019t assign you more than this until you\u2019re back from your break.',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 12.5,
-                height: 1.3,
-                color: _ProfileColors.subtitle,
               ),
             ),
             const SizedBox(height: 22),
