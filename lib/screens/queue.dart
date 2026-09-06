@@ -425,6 +425,10 @@ class _QueueScreenState extends State<QueueScreen>
 
     for (final id in newIds) {
       final patient = assignments.firstWhere((p) => p.assignmentId == id);
+      debugPrint(
+        'QueueScreen: detected new patient assignment '
+        '"${patient.name}" (assignment $id) — posting alert',
+      );
       NotificationService.instance.showNewPatientAssignment(
         NewPatientNotification(
           patientName: patient.name,

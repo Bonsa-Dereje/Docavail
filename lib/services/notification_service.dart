@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -50,15 +51,17 @@ class NotificationService {
   /// a local "new patient" alert needs to be stable or deduplicated by id.
   int _nextId = 0;
 
-  Future<void>? _initFuture;
+  /// Plugin/channel setup state. Kept as plain flags instead of a cached
+  /// Future so a failed init (e.g. a platform channel race during app
+  /// startup) doesn't permanently poison every later show() call — the next
+  /// notification simply retries.
+  bool _initialized = false;
+  bool _permissionRequested = false;
 
   /// Sets up the plugin (channels, tap handler) and requests notification
-  /// permission. Idempotent — repeated calls settle on one initialization.
-  Future<void> initialize() {
-    return _initFuture ??= _initialize();
-  }
-
-  Future<void> _initialize() async {
+  /// permission. Idempotent and safe to call more than once.
+  Future<void> initialize() async {
+    if (_initialized) return;
     const settings = InitializationSettings(
       android: AndroidInitializationSettings('@mipmap/ic_launcher'),
       iOS: DarwinInitializationSettings(
@@ -71,17 +74,33 @@ class NotificationService {
       settings: settings,
       onDidReceiveNotificationResponse: _onNotificationTapped,
     );
+    _initialized = true;
+    // Kick off the OS permission prompt without blocking callers; on first
+    // launch this shows the dialog immediately, and on later runs it's a
+    // no-op. Each alert also re-checks via _requestPermissionOnce.
+    unawaited(_requestPermissionOnce());
+  }
 
-    // Android 13+ gates notifications behind a runtime permission, and iOS
-    // wants an explicit opt-in — ask for both up front so the first
-    // assignment alert isn't silently dropped.
-    final android = _plugin.resolvePlatformSpecificImplementation<
-        AndroidFlutterLocalNotificationsPlugin>();
-    await android?.requestNotificationsPermission();
+  /// Requests the runtime notification permission (Android 13+/iOS). Called
+  /// once — the OS only shows the dialog a single time. Deliberately not
+  /// awaited by [showNewPatientAssignment]'s caller path in a way that
+  /// blocks, so a pending/dismissed dialog can never stall an alert.
+  Future<void> _requestPermissionOnce() async {
+    if (_permissionRequested) return;
+    _permissionRequested = true;
+    try {
+      // Android 13+ gates notifications behind a runtime permission, and
+      // iOS wants an explicit opt-in.
+      final android = _plugin.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
+      await android?.requestNotificationsPermission();
 
-    final ios = _plugin.resolvePlatformSpecificImplementation<
-        IOSFlutterLocalNotificationsPlugin>();
-    await ios?.requestPermissions(alert: true, badge: true, sound: true);
+      final ios = _plugin.resolvePlatformSpecificImplementation<
+          IOSFlutterLocalNotificationsPlugin>();
+      await ios?.requestPermissions(alert: true, badge: true, sound: true);
+    } catch (err) {
+      debugPrint('NotificationService: permission request failed: $err');
+    }
   }
 
   void _onNotificationTapped(NotificationResponse response) {
@@ -104,28 +123,41 @@ class NotificationService {
 
   /// Raises a high-priority "New Patient" alert for a newly assigned
   /// patient. [complaint] is the chief complaint (the patient's case).
+  ///
+  /// Runs entirely inside try/catch so a platform hiccup can never crash the
+  /// queue poll that calls this, and any failure is logged (visible in
+  /// `flutter run` / `adb logcat`) instead of vanishing silently.
   Future<void> showNewPatientAssignment(NewPatientNotification notification) async {
-    await initialize();
-    await _plugin.show(
-      id: _nextId++,
-      title: 'New Patient',
-      body: 'Case: ${notification.complaint}',
-      notificationDetails: const NotificationDetails(
-        android: AndroidNotificationDetails(
-          _channelId,
-          _channelName,
-          channelDescription: _channelDescription,
-          importance: Importance.high,
-          priority: Priority.high,
+    try {
+      await initialize();
+      await _requestPermissionOnce();
+      await _plugin.show(
+        id: _nextId++,
+        title: 'New Patient',
+        body: 'Case: ${notification.complaint}',
+        notificationDetails: const NotificationDetails(
+          android: AndroidNotificationDetails(
+            _channelId,
+            _channelName,
+            channelDescription: _channelDescription,
+            importance: Importance.high,
+            priority: Priority.high,
+          ),
+          iOS: DarwinNotificationDetails(),
         ),
-        iOS: DarwinNotificationDetails(),
-      ),
-      payload: jsonEncode({
-        'patientName': notification.patientName,
-        'complaint': notification.complaint,
-        'patientId': notification.patientId,
-        'assignmentId': notification.assignmentId,
-      }),
-    );
+        payload: jsonEncode({
+          'patientName': notification.patientName,
+          'complaint': notification.complaint,
+          'patientId': notification.patientId,
+          'assignmentId': notification.assignmentId,
+        }),
+      );
+      debugPrint(
+        'NotificationService: posted new-patient alert for '
+        '${notification.patientName}',
+      );
+    } catch (err) {
+      debugPrint('NotificationService: failed to post notification: $err');
+    }
   }
 }
