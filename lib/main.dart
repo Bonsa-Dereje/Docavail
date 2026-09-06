@@ -4,10 +4,36 @@ import 'package:flutter/material.dart';
 
 import 'screens/app_shell.dart';
 import 'screens/login_screen.dart';
+import 'screens/patients.dart';
 import 'services/auth_service.dart';
+import 'services/notification_service.dart';
+
+/// Global navigator key so the notification service (which has no
+/// BuildContext of its own) can deep-link a tapped "new patient"
+/// notification straight into that patient's brief.
+final GlobalKey<NavigatorState> appNavigatorKey = GlobalKey<NavigatorState>();
 
 void main() {
+  // Kick off plugin setup + the notification permission prompt early so the
+  // first "new patient assigned" alert isn't dropped waiting on setup.
+  NotificationService.onNotificationTap = _openPatientFromNotification;
+  unawaited(NotificationService.instance.initialize());
   runApp(const MyApp());
+}
+
+/// Deep-links a tapped "new patient assigned" notification to the patient's
+/// brief screen. Mirrors QueueScreen's fallback (a bare route push when no
+/// AppShell scope is available).
+void _openPatientFromNotification(NewPatientNotification notification) {
+  if (notification.patientId == null) return;
+  appNavigatorKey.currentState?.push(
+    MaterialPageRoute(
+      builder: (_) => PatientBriefScreen(
+        patientId: notification.patientId,
+        assignmentId: notification.assignmentId,
+      ),
+    ),
+  );
 }
 
 class MyApp extends StatelessWidget {
@@ -18,6 +44,7 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Docavail',
       debugShowCheckedModeBanner: false,
+      navigatorKey: appNavigatorKey,
       theme: ThemeData(
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF0D2B9E)),

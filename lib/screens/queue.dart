@@ -6,6 +6,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
 import '../services/consultation_state.dart';
+import '../services/notification_service.dart';
 import 'app_shell.dart';
 import 'patients.dart';
 import 'selected_patient.dart';
@@ -204,6 +205,18 @@ class _QueueScreenState extends State<QueueScreen>
   /// this is the stand-in "desktop admin" trigger, see patient_assign.js.
   bool _runningAssignment = false;
 
+  /// Assignment ids that have already produced a "new patient assigned"
+  /// notification (or were already on the queue at first load, which
+  /// doesn't alert). The poll runs once a second, so without this guard
+  /// every tick would re-raise the same notification for every card.
+  final Set<String> _notifiedAssignmentIds = {};
+
+  /// True once the queue has fetched at least once. The very first load
+  /// only seeds [_notifiedAssignmentIds] and never alerts, so a doctor who
+  /// already has patients before opening the app isn't spammed with
+  /// notifications for patients they can already see.
+  bool _hasLoadedOnce = false;
+
   /// How often the queue re-checks GET /api/patient_assign while mounted,
   /// so a patient assigned from the desktop admin tool appears here without
   /// the doctor needing to restart the app or switch tabs.
@@ -294,6 +307,7 @@ class _QueueScreenState extends State<QueueScreen>
     try {
       final result = await _fetchQueue();
       if (!mounted) return;
+      _handleNewAssignments(result);
       _publishConsultation(result);
       setState(() {
         _queueResult = result;
@@ -318,6 +332,7 @@ class _QueueScreenState extends State<QueueScreen>
     try {
       final result = await _fetchQueue();
       if (!mounted) return;
+      _handleNewAssignments(result);
       _publishConsultation(result);
       setState(() {
         _queueResult = result;
@@ -380,6 +395,44 @@ class _QueueScreenState extends State<QueueScreen>
       return jsonDecode(body) as Map<String, dynamic>;
     } catch (_) {
       return null;
+    }
+  }
+
+  /// Compares the freshly-fetched queue against what we've already alerted
+  /// for and raises a "New Patient" notification for every assignment that
+  /// just appeared. The first load only seeds the seen-set — a doctor who
+  /// already has patients when the app opens shouldn't be notified about
+  /// the ones already on screen.
+  void _handleNewAssignments(_QueueLoadResult result) {
+    final assignments = result.patients;
+
+    if (!_hasLoadedOnce) {
+      _hasLoadedOnce = true;
+      if (assignments.isNotEmpty) {
+        _notifiedAssignmentIds.addAll(
+          assignments.map((p) => p.assignmentId),
+        );
+      }
+      return;
+    }
+
+    if (assignments.isEmpty) return;
+
+    final currentIds = assignments.map((p) => p.assignmentId).toSet();
+    final newIds = currentIds.difference(_notifiedAssignmentIds);
+    if (newIds.isEmpty) return;
+    _notifiedAssignmentIds.addAll(newIds);
+
+    for (final id in newIds) {
+      final patient = assignments.firstWhere((p) => p.assignmentId == id);
+      NotificationService.instance.showNewPatientAssignment(
+        NewPatientNotification(
+          patientName: patient.name,
+          complaint: patient.detailText,
+          patientId: patient.id,
+          assignmentId: patient.assignmentId,
+        ),
+      );
     }
   }
 
