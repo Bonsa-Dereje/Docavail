@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
+import '../services/consultation_state.dart';
 import 'login_screen.dart' show LoginScreen;
 
 /// Brand + status colors used across the Profile / Status Control screen.
@@ -108,7 +109,25 @@ class _ProfileScreenState extends State<ProfileScreen> {
   @override
   void initState() {
     super.initState();
+    // Keep the availability mode in sync with whichever patient is mid-
+    // consultation. The Queue screen feeds ConsultationState while it polls
+    // GET /api/patient_assign every second, so whenever a consultation
+    // starts or ends on the Queue/Patients screens this screen hears about
+    // it and reflects it ("Consulting" while active) without the doctor
+    // having to touch the status grid.
+    ConsultationState.instance.addListener(_onConsultationChanged);
     _loadUser();
+  }
+
+  void _onConsultationChanged() {
+    if (!mounted) return;
+    _syncModeWithConsultation();
+  }
+
+  @override
+  void dispose() {
+    ConsultationState.instance.removeListener(_onConsultationChanged);
+    super.dispose();
   }
 
   Future<void> _loadUser() async {
@@ -317,6 +336,46 @@ class _ProfileScreenState extends State<ProfileScreen> {
         _onDuty = previousOnDuty;
       });
     }
+  }
+
+  /// Whether the profile is currently authoring its own mode (e.g. the
+  /// doctor picked "Hospital" after a consultation ended) rather than
+  /// being overridden by a live consultation. Guards the sync below so it
+  /// never fights a manual selection.
+  bool _consultationDroveMode = false;
+
+  /// Reconciles the on-screen availability mode with the shared
+  /// [ConsultationState]. When a patient is mid-consultation the doctor is
+  /// effectively "Consulting", so this auto-switches the mode (and pushes
+  /// the same status_update the grid buttons do); once the last
+  /// consultation ends it drops back to "Hospital".
+  Future<void> _syncModeWithConsultation() async {
+    final consulting = ConsultationState.instance.hasActiveConsultation;
+
+    if (consulting) {
+      // A consultation is live: force the mode to Consulting so Profile,
+      // Queue and Patients all agree, on duty.
+      _consultationDroveMode = true;
+      if (_mode == _AvailabilityMode.consulting && _onDuty) return;
+      setState(() {
+        _mode = _AvailabilityMode.consulting;
+        _onDuty = true;
+      });
+      await _pushStatus(onDuty: true, mode: _AvailabilityMode.consulting);
+      return;
+    }
+
+    // No active consultation: only "un-drive" the mode if the profile had
+    // been auto-set to Consulting by an earlier consultation. A manual
+    // Hospital/Break/Leaving selection stays untouched.
+    if (!_consultationDroveMode) return;
+    _consultationDroveMode = false;
+    if (_mode == _AvailabilityMode.hospital && _onDuty) return;
+    setState(() {
+      _mode = _AvailabilityMode.hospital;
+      _onDuty = true;
+    });
+    await _pushStatus(onDuty: true, mode: _AvailabilityMode.hospital);
   }
 
   @override
@@ -530,11 +589,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
     // While off duty, no mode is meaningfully "active" — grey every card
     // out rather than keeping the last-picked one highlighted navy. The
     // cards stay tappable: picking one while off duty auto-flips duty on.
+    //
+    // While a patient is mid-consultation the doctor is effectively
+    // Consulting, so the other modes are locked out (grayed + non-tappable)
+    // — only the Consulting card stays active/selected.
+    final bool inConsultation =
+        ConsultationState.instance.hasActiveConsultation;
     final bool showSelected = _mode == mode && _onDuty;
-    final bool grayedOut = !_onDuty;
+    final bool lockedInConsultation = inConsultation &&
+        mode != _AvailabilityMode.consulting;
+    final bool grayedOut = !_onDuty || lockedInConsultation;
 
     return GestureDetector(
-      onTap: _statusSyncing ? null : () => _selectMode(mode),
+      onTap: (_statusSyncing || lockedInConsultation)
+          ? null
+          : () => _selectMode(mode),
       child: Opacity(
         opacity: grayedOut
             ? 0.45

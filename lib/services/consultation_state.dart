@@ -32,6 +32,14 @@ class ConsultationState extends ChangeNotifier {
   /// from the server".
   bool get hasData => _inConsultation.isNotEmpty;
 
+  /// True when at least one of this doctor's assignments is currently in an
+  /// active consultation. The Profile screen uses this to keep its
+  /// availability mode ("Consulting") in sync with the Queue/Patients
+  /// screens: whenever any patient is mid-consultation the doctor is
+  /// effectively "Consulting", so the profile reflects that instead of an
+  /// unrelated Hospital/Break/Leaving state.
+  bool get hasActiveConsultation => _inConsultation.containsValue(true);
+
   /// Replaces the whole consultation table with the freshly-polled server
   /// truth, then notifies listeners if anything changed. [entries] is the
   /// doctor's full assignment list keyed by assignment_id -> in_consultation.
