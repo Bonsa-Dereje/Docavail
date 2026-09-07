@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 
 import 'app_shell.dart';
 import '../services/auth_service.dart';
+import 'triage_nurse.dart';
 import 'userinfro.dart' show DocavailRole, DocavailRoleApi;
 
 /// Brand colors pulled from the Docavail mockup.
@@ -149,8 +150,11 @@ class _PinScreenState extends State<PinScreen> {
   }
 
   void _goToPatients() {
+    final destination = widget.role == DocavailRole.triageNurse
+        ? const TriageNurseScreen()
+        : const AppShell();
     Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (context) => const AppShell()),
+      MaterialPageRoute(builder: (context) => destination),
     );
   }
 

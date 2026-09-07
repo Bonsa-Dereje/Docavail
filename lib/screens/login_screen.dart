@@ -260,7 +260,7 @@ class _LoginScreenState extends State<LoginScreen> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           const Text(
-            'Sign In',
+            'Sign Up',
             textAlign: TextAlign.center,
             style: TextStyle(
               fontSize: 20,
@@ -299,7 +299,7 @@ class _LoginScreenState extends State<LoginScreen> {
       keyboardType: TextInputType.phone,
       style: const TextStyle(fontSize: 15, color: _DocavailColors.heading),
       decoration: InputDecoration(
-        hintText: '+1 (555) 000-0000',
+        hintText: '+251',
         hintStyle: const TextStyle(color: _DocavailColors.fieldHint),
         prefixIcon: const Icon(
           Icons.call_outlined,

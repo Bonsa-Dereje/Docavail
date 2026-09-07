@@ -27,15 +27,14 @@ const String _apiBaseUrl = 'https://docavail-endpoints.vercel.app/api';
 /// The roles a new user can register as.
 enum DocavailRole {
   doctor('Dr.'),
-  triageNurse('Triage Nurse'),
-  reception('Reception');
+  triageNurse('Triage Nurse');
 
   const DocavailRole(this.label);
   final String label;
 }
 
 /// Maps [DocavailRole] to/from the `user_role` Postgres enum values
-/// ('doctor', 'triage_nurse', 'reception') used by userinfo.js.
+/// ('doctor', 'triage_nurse') used by userinfo.js.
 extension DocavailRoleApi on DocavailRole {
   String get apiValue {
     switch (this) {
@@ -43,8 +42,6 @@ extension DocavailRoleApi on DocavailRole {
         return 'doctor';
       case DocavailRole.triageNurse:
         return 'triage_nurse';
-      case DocavailRole.reception:
-        return 'reception';
     }
   }
 }
@@ -427,7 +424,7 @@ class _UserInfoScreenState extends State<UserInfoScreen> {
       textCapitalization: TextCapitalization.words,
       style: const TextStyle(fontSize: 15, color: _DocavailColors.heading),
       decoration: InputDecoration(
-        hintText: 'e.g. Jordan Lee',
+        hintText: 'e.g. Tesfaye Dagne',
         hintStyle: const TextStyle(color: _DocavailColors.fieldHint),
         prefixIcon: const Icon(
           Icons.person_outline,
