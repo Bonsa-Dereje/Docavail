@@ -521,6 +521,7 @@ class _QueueScreenState extends State<QueueScreen>
     final token = await _resolveToken();
     if (token == null || token.isEmpty) return;
     setState(() => _completingConsultationIds.add(assignmentId));
+    ConsultationState.instance.markCompletePending(assignmentId);
 
     try {
       final uri = Uri.parse('${widget.apiBaseUrl}/api/patient_assign');
@@ -549,6 +550,7 @@ class _QueueScreenState extends State<QueueScreen>
         SnackBar(content: Text('Couldn\'t end session: $err')),
       );
     } finally {
+      ConsultationState.instance.clearCompletePending(assignmentId);
       if (mounted) {
         setState(() => _completingConsultationIds.remove(assignmentId));
       }
@@ -572,6 +574,7 @@ class _QueueScreenState extends State<QueueScreen>
       patient.assignmentId,
       name: patient.name,
     );
+    ConsultationState.instance.markStartPending(patient.assignmentId);
     _openPatientBrief(patient, autoStartConsultation: true);
 
     try {
@@ -603,6 +606,7 @@ class _QueueScreenState extends State<QueueScreen>
         SnackBar(content: Text('Couldn\'t start consultation: $err')),
       );
     } finally {
+      ConsultationState.instance.clearStartPending(patient.assignmentId);
       if (mounted) {
         setState(() => _startingConsultationIds.remove(patient.assignmentId));
       }

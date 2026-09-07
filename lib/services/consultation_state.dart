@@ -105,4 +105,45 @@ class ConsultationState extends ChangeNotifier {
     }
     notifyListeners();
   }
+
+  /// assignment_ids whose {action:"start_consult"} POST is still in flight.
+  final Set<String> _pendingStarts = {};
+
+  /// assignment_ids whose {action:"complete"} POST is still in flight.
+  final Set<String> _pendingCompletes = {};
+
+  /// True while a start_consult for [assignmentId] is still in flight —
+  /// both the Queue card and the Patient Brief button gray out / disable
+  /// until the server confirms, so the screen can't flip to an active
+  /// "End Session" state before the backend actually has it.
+  bool isPendingStart(String? assignmentId) =>
+      assignmentId != null && _pendingStarts.contains(assignmentId);
+
+  /// True while a complete for [assignmentId] is still in flight.
+  bool isPendingComplete(String? assignmentId) =>
+      assignmentId != null && _pendingCompletes.contains(assignmentId);
+
+  /// Marks a start_consult POST as in flight (called alongside the
+  /// optimistic [markActive] so the "Starting Session…" state is visible
+  /// until the response lands).
+  void markStartPending(String? assignmentId) {
+    if (assignmentId == null || !_pendingStarts.add(assignmentId)) return;
+    notifyListeners();
+  }
+
+  void clearStartPending(String? assignmentId) {
+    if (assignmentId == null || !_pendingStarts.remove(assignmentId)) return;
+    notifyListeners();
+  }
+
+  /// Marks a complete POST as in flight.
+  void markCompletePending(String? assignmentId) {
+    if (assignmentId == null || !_pendingCompletes.add(assignmentId)) return;
+    notifyListeners();
+  }
+
+  void clearCompletePending(String? assignmentId) {
+    if (assignmentId == null || !_pendingCompletes.remove(assignmentId)) return;
+    notifyListeners();
+  }
 }

@@ -35,4 +35,13 @@ class SelectedPatient {
     SelectedPatient.assignmentId = assignmentId;
     SelectedPatient.autoStartConsultation = autoStartConsultation;
   }
+
+  /// Drops the currently open patient — used after the "End Consultation"
+  /// flow when nobody else is waiting, so the brief returns to its
+  /// "no patient selected" state instead of holding the last patient.
+  static void clear() {
+    patientId = null;
+    assignmentId = null;
+    autoStartConsultation = false;
+  }
 }

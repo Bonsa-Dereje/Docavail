@@ -374,6 +374,14 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
     }
 
     setState(() => _consultationActionInFlight = true);
+    // Publish the shared pending state so the queue card (and this
+    // button, via ConsultationState) stays grayed out until the server
+    // round-trip lands, not just this screen's local flag.
+    if (targetActive) {
+      ConsultationState.instance.markStartPending(assignmentId);
+    } else {
+      ConsultationState.instance.markCompletePending(assignmentId);
+    }
     try {
       await _postConsultationAction(assignmentId, targetActive);
       if (!mounted) return;
@@ -394,6 +402,11 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
         SnackBar(content: Text('$err')),
       );
     } finally {
+      if (targetActive) {
+        ConsultationState.instance.clearStartPending(assignmentId);
+      } else {
+        ConsultationState.instance.clearCompletePending(assignmentId);
+      }
       if (mounted) setState(() => _consultationActionInFlight = false);
     }
   }
@@ -565,6 +578,22 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
         );
       },
     );
+
+    // Nobody else was waiting — drop back to the "no patient selected"
+    // prompt instead of keeping the last treated patient on screen.
+    if (!mounted) return;
+    final next = await future;
+    if (next == null) {
+      SelectedPatient.clear();
+      // Null the screen's own state directly rather than going through
+      // [_syncFromSource]: that reads widget.patientId, which AppShell bakes
+      // in at build time and only refreshes on a tab switch, so it would
+      // still resolve to the just-finished patient here.
+      setState(() {
+        _loadedPatientId = null;
+        _dataFuture = null;
+      });
+    }
   }
 
   /// Switches this screen over to [patientId] — same globally-selected-
@@ -1176,19 +1205,31 @@ class _PatientBriefScreenState extends State<PatientBriefScreen> {
   }
 
   Widget _buildStartConsultationButton() {
+    final String? assignmentId = _effectiveAssignmentId();
     final bool active = _isConsultationActive;
     // A different patient is mid-consultation and this one isn't: gray the
     // button out (still tappable — the tap prompts to end the current
     // session first) so the slot can't silently hold two consultations.
     final bool anotherActive =
         !active && ConsultationState.instance.hasActiveConsultation;
-    final bool busy = _consultationActionInFlight;
-    final String label = busy
-        ? (active ? 'Ending…' : 'Starting…')
-        : (active ? 'End Consultation' : 'Start Consultation');
-    final Color base = anotherActive
+    // A start_consult/complete for this assignment is still in flight —
+    // whether kicked off from this button or from the queue card (which
+    // publishes it through ConsultationState). Gray the button and keep it
+    // disabled until the server confirms, so it can't flip to a live
+    // "End Session" before the backend actually has it.
+    final bool starting = ConsultationState.instance.isPendingStart(assignmentId) ||
+        (_consultationActionInFlight && !active);
+    final bool ending = ConsultationState.instance.isPendingComplete(assignmentId) ||
+        (_consultationActionInFlight && active);
+    final bool busy = starting || ending;
+    final String label = starting
+        ? 'Starting Session…'
+        : (ending ? 'Ending Session…' : (active ? 'End Session' : 'Start Consultation'));
+    final Color base = starting
         ? _PatientColors.inactiveFg
-        : (active ? _PatientColors.allergyIconBg : _PatientColors.navy);
+        : (active || ending
+            ? _PatientColors.allergyIconBg
+            : (anotherActive ? _PatientColors.inactiveFg : _PatientColors.navy));
     return SafeArea(
       top: false,
       child: Padding(
