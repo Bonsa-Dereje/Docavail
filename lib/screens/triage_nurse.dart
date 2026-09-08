@@ -83,25 +83,12 @@ class _PatientTypeSelector extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Center(
+      // Push the buttons slightly above the vertical center.
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 28),
+        padding: const EdgeInsets.fromLTRB(28, 0, 28, 90),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text(
-              'Who are you triaging?',
-              style: TextStyle(
-                fontSize: 22,
-                fontWeight: FontWeight.w700,
-                color: _C.heading,
-              ),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Select the patient type to continue.',
-              style: TextStyle(fontSize: 14, color: _C.subtitle),
-            ),
-            const SizedBox(height: 36),
             _BigChoiceButton(
               icon: Icons.person_search_rounded,
               label: 'Existing Patient',

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
 import 'app_shell.dart';
+import 'triage_nurse.dart';
 import '../services/auth_service.dart';
 
 /// Brand colors pulled from the Docavail mockup.
@@ -97,9 +98,21 @@ class _IdLoginScreenState extends State<IdLoginScreen> {
       if (response.statusCode == 200 && match) {
         final token = body['token'] as String?;
         if (token != null) await AuthService.instance.saveToken(token);
+        // The login response may not carry the role, so pull it from the
+        // userinfo endpoint to decide which home screen to open.
+        var role = body['role'] as String?;
+        if (role == null && token != null) {
+          role = await AuthService.instance.fetchUserRole(token);
+        }
+        if (role != null) await AuthService.instance.saveRole(role);
         if (!mounted) return;
+        final isNurse = (role ?? '').toLowerCase().contains('nurse');
         Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (context) => const AppShell()),
+          MaterialPageRoute(
+            builder: (_) => isNurse
+                ? const TriageNurseScreen()
+                : const AppShell(),
+          ),
         );
       } else {
         _showMessage('Incorrect ID or PIN. Please try again.');

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'screens/app_shell.dart';
 import 'screens/login_screen.dart';
 import 'screens/patients.dart';
+import 'screens/triage_nurse.dart';
 import 'services/auth_service.dart';
 import 'services/notification_service.dart';
 
@@ -97,9 +98,20 @@ class _SplashScreenState extends State<SplashScreen>
 
   void _navigate() {
     if (!mounted) return;
-    _sessionCheck.then((valid) {
+    _sessionCheck.then((valid) async {
       if (!mounted) return;
-      final destination = valid ? const AppShell() : const LoginScreen();
+      Widget destination;
+      if (valid) {
+        // Route to the role-appropriate home screen: nurses get the triage
+        // station, everyone else (doctors) gets the patient shell.
+        final role = await AuthService.instance.getRole();
+        if (!mounted) return;
+        destination = (role ?? '').toLowerCase().contains('nurse')
+            ? const TriageNurseScreen()
+            : const AppShell();
+      } else {
+        destination = const LoginScreen();
+      }
       Navigator.of(context).pushReplacement(
         PageRouteBuilder(
           transitionDuration: const Duration(milliseconds: 400),

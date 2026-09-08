@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -150,6 +151,9 @@ class _PinScreenState extends State<PinScreen> {
   }
 
   void _goToPatients() {
+    // Persist the role too, so app relaunches (which restore the session
+    // from secure storage) land on the right home screen.
+    unawaited(AuthService.instance.saveRole(widget.role.apiValue));
     final destination = widget.role == DocavailRole.triageNurse
         ? const TriageNurseScreen()
         : const AppShell();
